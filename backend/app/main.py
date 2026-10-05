@@ -89,6 +89,12 @@ async def scheduler_loop():
                     forward_socket.sendto(pkt.payload, ("127.0.0.1", 9005))
                 except Exception:
                     pass
+            # --- LIVE VIDEO STREAMING LOGIC ---
+            elif pkt.flow_id == 998:
+                try:
+                    forward_socket.sendto(pkt.payload, ("127.0.0.1", 9006))
+                except Exception:
+                    pass
             # --------------------------------
             
             # Simulate transmission delay to enforce output bandwidth
