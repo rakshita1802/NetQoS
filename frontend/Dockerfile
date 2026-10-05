@@ -1,6 +1,4 @@
-FROM node:18-alpine
-
-# Set the working directory
+FROM node:20-alpine
 WORKDIR /app
 
 # Copy package files and install dependencies
