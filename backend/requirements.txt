@@ -3,5 +3,6 @@ uvicorn
 psutil
 pydantic
 websockets
+numpy
 scikit-learn
 joblib

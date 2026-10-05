@@ -1,8 +1,10 @@
-FROM node:20-alpine
+FROM node:20-slim
+
+# Set the working directory
 WORKDIR /app
 
-# Copy package files and install dependencies
-COPY package.json package-lock.json* ./
+# Copy package.json and install dependencies for the container OS
+COPY package.json ./
 RUN npm install
 
 # Copy the frontend source code
