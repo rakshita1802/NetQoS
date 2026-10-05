@@ -22,7 +22,8 @@ function App() {
   const [activeFlows, setActiveFlows] = useState([]);
   
   const [history, setHistory] = useState([]);
-  
+  const [isHistoricalView, setIsHistoricalView] = useState(false);  
+  const [firewallEnabled, setFirewallEnabled] = useState(false);
   const [flowConfig, setFlowConfig] = useState({
     flow_id: 1,
     protocol: 'TCP',
@@ -40,8 +41,12 @@ function App() {
       setMetrics(data.metrics);
       setSchedulerInfo({ scheduler: data.scheduler, stats: data.scheduler_stats });
       setActiveFlows(data.active_flows);
+      setFirewallEnabled(data.firewall_enabled);
       
       setHistory(prev => {
+        // If in historical mode, ignore live websocket data for the chart
+        if (isHistoricalView) return prev;
+        
         const newHist = [...prev, {
           time: new Date().toLocaleTimeString(),
           throughput: data.metrics.throughput_bps / 1000000, // Mbps
@@ -61,6 +66,7 @@ function App() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(flowConfig)
     });
+    setFlowConfig(prev => ({ ...prev, flow_id: prev.flow_id + 1 }));
   };
 
   const stopAllTraffic = async () => {
@@ -72,6 +78,31 @@ function App() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ algorithm: algo })
+    });
+  };
+
+  const loadHistoricalData = async () => {
+    setIsHistoricalView(true);
+    const res = await fetch(`${API_BASE}/metrics/history?limit=50`);
+    const data = await res.json();
+    const formatted = data.map(d => ({
+      time: new Date(d.timestamp).toLocaleTimeString(),
+      throughput: d.throughput,
+      latency: d.latency
+    }));
+    setHistory(formatted);
+  };
+
+  const resumeLiveView = () => {
+    setIsHistoricalView(false);
+    setHistory([]);
+  };
+
+  const toggleFirewall = async () => {
+    await fetch(`${API_BASE}/firewall/toggle`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: !firewallEnabled })
     });
   };
 
@@ -108,7 +139,23 @@ function App() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         {/* Main Chart */}
         <div className="lg:col-span-2 bg-gray-800 p-6 rounded-xl border border-gray-700 shadow-lg">
-          <h2 className="text-xl font-semibold mb-4 flex items-center gap-2"><BarChart3/> Live Traffic</h2>
+          <div className="flex justify-between items-center mb-4">
+            <h2 className="text-xl font-semibold flex items-center gap-2">
+              <BarChart3/> {isHistoricalView ? "Historical Database Metrics (Last 50)" : "Live Traffic"}
+            </h2>
+            <div className="flex gap-2">
+              <button 
+                onClick={resumeLiveView}
+                className={`px-3 py-1 rounded text-sm font-medium ${!isHistoricalView ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-400 hover:bg-gray-600'}`}
+              >Live Stream</button>
+              <button 
+                onClick={loadHistoricalData}
+                className={`px-3 py-1 rounded text-sm font-medium flex items-center gap-1 ${isHistoricalView ? 'bg-purple-600 text-white' : 'bg-gray-700 text-gray-400 hover:bg-gray-600'}`}
+              >
+                <Clock size={14}/> DB History
+              </button>
+            </div>
+          </div>
           <div className="h-[300px]">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={history}>
@@ -129,7 +176,7 @@ function App() {
           <div>
             <h2 className="text-xl font-semibold mb-4 flex items-center gap-2"><Settings/> Scheduler</h2>
             <div className="flex flex-wrap gap-2 mb-4">
-              {['FIFO', 'Priority', 'WFQ', 'Adaptive'].map(algo => (
+              {['FIFO', 'Priority', 'WFQ', 'Adaptive', 'Predictive ML'].map(algo => (
                 <button
                   key={algo}
                   onClick={() => setScheduler(algo)}
@@ -143,11 +190,26 @@ function App() {
                 </button>
               ))}
             </div>
-            {schedulerInfo.scheduler === 'Adaptive' && (
+            {(schedulerInfo.scheduler === 'Adaptive' || schedulerInfo.scheduler === 'Predictive ML') && (
               <div className="bg-blue-900/30 p-3 rounded-lg border border-blue-800/50 text-sm text-blue-200">
                 <span className="font-bold">Adaptation:</span> {schedulerInfo.stats?.last_adaptation_reason || "None"}
               </div>
             )}
+          </div>
+
+          <div className="flex-grow"></div>
+
+          <div>
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-xl font-semibold flex items-center gap-2"><ShieldAlert/> Firewall (Policer)</h2>
+              <button 
+                onClick={toggleFirewall}
+                className={`px-4 py-1 rounded-full text-sm font-bold transition-colors ${firewallEnabled ? 'bg-red-600 text-white' : 'bg-gray-700 text-gray-400'}`}
+              >
+                {firewallEnabled ? 'ACTIVE (1 Mbps Limit)' : 'DISABLED'}
+              </button>
+            </div>
+            <p className="text-xs text-gray-400 mb-4">Uses Token Bucket to drop ingress packets if rate exceeds limit.</p>
           </div>
 
           <div className="flex-grow"></div>
