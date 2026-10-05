@@ -1,4 +1,5 @@
 import asyncio
+import socket
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -73,11 +74,23 @@ async def db_logger_loop():
         )
         await asyncio.sleep(1.0) # Log every 1 second
 
+forward_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
 async def scheduler_loop():
     while True:
         pkt = current_scheduler.get_next_packet()
         if pkt:
             metrics_engine.record_transmission(pkt)
+            
+            # --- REAL FILE TRANSFER LOGIC ---
+            # If the packet belongs to our Real File App (flow_id = 999), forward the raw payload to the File Server
+            if pkt.flow_id == 999:
+                try:
+                    forward_socket.sendto(pkt.payload, ("127.0.0.1", 9005))
+                except Exception:
+                    pass
+            # --------------------------------
+            
             # Simulate transmission delay to enforce output bandwidth
             packet_size_bits = (len(pkt.payload) + 16) * 8
             delay = packet_size_bits / OUTPUT_BANDWIDTH_BPS
