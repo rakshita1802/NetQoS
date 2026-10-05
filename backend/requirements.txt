@@ -3,3 +3,5 @@ uvicorn
 psutil
 pydantic
 websockets
+scikit-learn
+joblib
