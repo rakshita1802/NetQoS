@@ -158,3 +158,14 @@ This project simulates the exact architecture used by global internet providers 
 * **Zoom / Microsoft Teams (VoIP):** Just like our video client, Zoom uses UDP. Our project proves how ISPs prioritize Zoom packets so your conference call doesn't drop when someone else in your house downloads a large file.
 * **IP Security Cameras (CCTV):** Modern Ring Doorbells use the exact same MJPEG streaming protocol implemented here to securely route video feeds.
 * **ISP Traffic Management:** The ML Scheduler and Token Bucket Firewall demonstrate how internet providers like Comcast or AT&T manage network bandwidth, throttle specific users, and prevent DDoS attacks from taking down data centers.
+
+---
+
+## 8. Conclusion and Future Scope
+**Conclusion:**
+This project successfully demonstrates that software-defined networking, when coupled with Machine Learning, can proactively manage network congestion far better than traditional static routing algorithms. The implementation of a live, physical testbed using UDP video streams and interactive chat proved the mathematical latency improvements in real-time.
+
+**Future Scope for Expansion:**
+1. **Deep Packet Inspection (DPI):** Implementing an engine to read raw packet payloads and automatically classify traffic (e.g., detecting Malware or BitTorrent traffic) without relying on Flow IDs.
+2. **Reinforcement Learning (DQN):** Upgrading the AI from a Regression model to a Deep Q-Network that actively learns the best routing paths through trial and error.
+3. **Geo-Routing & Load Balancing:** Expanding the architecture to include multiple destination servers, allowing the router to dynamically hot-swap video feeds to backup servers if a primary link fails.
