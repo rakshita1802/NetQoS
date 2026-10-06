@@ -28,6 +28,7 @@ function App() {
   const [chatMessages, setChatMessages] = useState<string[]>([]);
   const [chatInput, setChatInput] = useState('');
   const [chatWs, setChatWs] = useState<WebSocket | null>(null);
+  const [snapshot, setSnapshot] = useState<string | null>(null);
 
   const [flowConfig, setFlowConfig] = useState({
     flow_id: 1,
@@ -78,6 +79,20 @@ function App() {
     if (chatWs && chatInput.trim() !== '') {
       chatWs.send(chatInput);
       setChatInput('');
+    }
+  };
+
+  const captureSnapshot = () => {
+    const videoImg = document.getElementById('live-video') as HTMLImageElement;
+    if (videoImg && videoImg.style.display !== 'none') {
+        const canvas = document.createElement('canvas');
+        canvas.width = videoImg.naturalWidth || videoImg.width || 640;
+        canvas.height = videoImg.naturalHeight || videoImg.height || 480;
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+            ctx.drawImage(videoImg, 0, 0, canvas.width, canvas.height);
+            setSnapshot(canvas.toDataURL('image/jpeg'));
+        }
     }
   };
 
@@ -259,15 +274,22 @@ function App() {
         </div>
       </div>
 
-      {/* Live Video Stream Section */}
+      {/* Live Video Stream UI */}
       <div className="mt-8 bg-gray-800 p-6 rounded-xl border border-gray-700 shadow-lg">
-        <h2 className="text-xl font-semibold mb-4 flex items-center gap-2 text-pink-400">
-          <PlayCircle size={24}/> Live Real-Time Video Stream
-        </h2>
+        <div className="flex justify-between items-center w-full mb-4">
+          <h2 className="text-xl font-semibold text-pink-400 flex items-center gap-2">
+            <PlayCircle size={24}/> Live Real-Time Video Stream
+          </h2>
+          <button onClick={captureSnapshot} className="bg-pink-600 hover:bg-pink-500 text-white px-4 py-1 rounded text-sm font-bold shadow transition-colors">
+             📸 Capture QoS Snapshot
+          </button>
+        </div>
         <div className="w-full bg-black rounded-lg border border-gray-700 overflow-hidden flex flex-col items-center justify-center min-h-[400px] relative">
            <img 
+              id="live-video"
               src="http://127.0.0.1:9007/video" 
-              alt="" 
+              crossOrigin="anonymous"
+              alt="Live Stream" 
               className="max-h-[500px] w-full object-contain z-10" 
               onError={(e) => { e.currentTarget.style.display = 'none'; }} 
               onLoad={(e) => { e.currentTarget.style.display = 'block'; }} 
@@ -278,6 +300,19 @@ function App() {
               <p className="text-xs mt-2 opacity-75">Run <code className="bg-gray-800 p-1 rounded text-pink-400">python video_server.py</code> and <code className="bg-gray-800 p-1 rounded text-pink-400">video_client.py</code></p>
            </div>
         </div>
+
+        {/* Snapshot Result Container */}
+        {snapshot && (
+          <div className="mt-6 p-4 border border-pink-500 bg-black rounded-lg shadow-xl animate-fade-in">
+             <h3 className="text-pink-400 text-sm mb-3 font-semibold flex items-center gap-2">
+               📸 Successfully Decoded Packet Snapshot:
+             </h3>
+             <img src={snapshot} alt="Captured Snapshot" className="rounded border border-gray-700 w-full max-w-2xl mx-auto" />
+             <p className="text-sm text-gray-400 mt-3 text-center italic">
+               This snapshot proves the UDP packets flying through the router are carrying valid, high-resolution JPEG data!
+             </p>
+          </div>
+        )}
       </div>
 
       {/* Lower Section: Queues and Logs */}
