@@ -311,11 +311,18 @@ function App() {
 
         {/* Live Packet Log Panel */}
         <div className="bg-gray-800 p-6 rounded-xl border border-gray-700 shadow-lg flex flex-col h-full">
-          <h2 className="text-xl font-semibold mb-4 flex items-center gap-2"><Activity size={20}/> Live Packet Log</h2>
+          <h2 className="text-xl font-semibold mb-4 flex items-center gap-2"><Activity size={20}/> Live Packet Log (L3/L4)</h2>
           <div className="flex-grow bg-black rounded-lg p-3 overflow-y-auto border border-gray-700 text-xs font-mono" style={{maxHeight: "300px"}}>
             {metrics.recent_logs && metrics.recent_logs.map((log, i) => (
-              <div key={i} className={`mb-1 ${log.type === 'DROP' ? 'text-red-400' : 'text-green-400'}`}>
-                [{log.type}] Flow {log.flow_id} | {log.size}B | {log.latency_ms}ms
+              <div key={i} className={`mb-1 ${
+                log.type === 'DROP' ? 'text-red-400' : 
+                log.type === 'TCP_ACK' ? 'text-blue-400 font-bold' :
+                log.type === 'TCP_RETRY' ? 'text-yellow-400 font-bold' :
+                'text-green-400'
+              }`}>
+                {log.type === 'TCP_ACK' ? `[ACK] Flow ${log.flow_id} | Client Acknowledged (${log.latency_ms}ms)` :
+                 log.type === 'TCP_RETRY' ? `[WAITING] Flow ${log.flow_id} | Waiting for ACK... Retransmitting!` :
+                 `[${log.type}] Flow ${log.flow_id} | ${log.size}B | ${log.latency_ms}ms`}
               </div>
             ))}
             {(!metrics.recent_logs || metrics.recent_logs.length === 0) && (
