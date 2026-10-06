@@ -62,9 +62,7 @@ graph TD
 
 ---
 
-## 5. Implementation and Functionalities
-
-### Packet Lifecycle & Working Model
+### 5.1 Packet Lifecycle Diagram
 ```mermaid
 sequenceDiagram
     participant Client
@@ -84,10 +82,59 @@ sequenceDiagram
     Scheduler->>Server: Forward Packet (Low Latency)
 ```
 
-**Functionalities Executed:**
-1. **Live MJPEG Video Streaming:** The router captures frames from a local webcam, fragments them into UDP chunks, and routes them to a Web Server which streams it live into the React Dashboard.
-2. **Interactive QoS Chat:** A chatroom where messages physically travel through the UDP queues, visually proving that lower-priority traffic gets delayed during congestion.
-3. **Machine Learning Adaptation:** The ML algorithm monitors queue sizes and latencies, actively shifting queue weights on the fly to prevent bufferbloat.
+### 5.2 Working Model Configuration
+To execute the working model, the architecture requires spinning up four asynchronous processes simultaneously on the host machine:
+1. **The QoS Router Core:** `uvicorn app.main:app --reload --port 8000` (Binds the Python UDP interceptor and FastAPI WebSocket manager).
+2. **The Telemetry Dashboard:** `npm run dev` (Initializes the React.js VITE server on port 5173).
+3. **The Egress Video Server:** `python video_server.py` (Binds an MJPEG FastAPI server on port 9007).
+4. **The Ingress Video Client:** `python video_client.py` (Activates the OpenCV webcam capture script).
+
+### 5.3 Core Coding Implementation (Snippets)
+
+**A. Packet Encapsulation & Transmission (Ingress)**
+The client reads physical hardware frames (WebCam) and encapsulates them into custom UDP packets using the `struct` library:
+```python
+PACKET_HEADER_FORMAT = "!dII" # Double Timestamp, Int FlowID, Int SeqNum
+def create_real_packet(flow_id, seq_num, payload):
+    header = struct.pack(PACKET_HEADER_FORMAT, time.time(), flow_id, seq_num)
+    return header + payload
+```
+
+**B. Token Bucket Policer (Firewall)**
+The router validates ingress packets against a predefined bandwidth limit before allowing them into the queues:
+```python
+def allow_packet(self, packet_size_bytes):
+    current_time = time.time()
+    time_passed = current_time - self.last_check
+    self.tokens = min(self.capacity, self.tokens + time_passed * self.rate)
+    self.last_check = current_time
+    if self.tokens >= packet_size_bytes:
+        self.tokens -= packet_size_bytes
+        return True # Packet Allowed
+    return False # Packet Dropped (DDoS Mitigated)
+```
+
+**C. Machine Learning Adaptive Scheduler (QoS)**
+The ML model predicts latency spikes dynamically:
+```python
+features = np.array([[q_length, arrival_rate, avg_wait_time]])
+predicted_latency = self.model.predict(features)[0]
+
+if predicted_latency > 0.1: # 100ms threshold
+    self.high_q.weight = 0.8  # Aggressively prioritize High-Q
+    self.low_q.weight = 0.05  # Starve background noise
+```
+
+### 5.4 Execution Results
+Upon execution, the terminal yields the following operational logs:
+```text
+INFO:     Started server process [25936]
+INFO:     Waiting for application startup.
+[NetQoS] Packet Receiver listening on UDP 127.0.0.1:9001
+[NetQoS] ML Model Loaded Successfully.
+INFO:     Application startup complete.
+```
+In the frontend dashboard, execution yields real-time mathematical validation of the algorithms. When the Firewall is toggled, execution results instantly demonstrate a mathematical drop in throughput (e.g., from 50 Mbps down to 1.0 Mbps hard-limit) with corresponding `[DROP]` logs appearing in the interactive packet tracing UI.
 
 ---
 
