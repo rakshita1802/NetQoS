@@ -1,38 +1,42 @@
 import socket
-import cv2
-import numpy as np
+import uvicorn
+from fastapi import FastAPI
+from fastapi.responses import StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
 
-def run_server():
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.bind(("127.0.0.1", 9006))
-    
-    print("=========================================")
-    print("📺 LIVE VIDEO SERVER LISTENING ON PORT 9006")
-    print("=========================================")
-    
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+sock.bind(("127.0.0.1", 9006))
+# Tiny timeout so the server doesn't freeze when the video stops
+sock.settimeout(0.5) 
+
+def generate_frames():
     while True:
         try:
             data, _ = sock.recvfrom(65535)
-            
-            # Decode the raw JPEG bytes back into a video frame
-            nparr = np.frombuffer(data, np.uint8)
-            frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-            
-            if frame is not None:
-                # Display the frame in a popup window
-                cv2.imshow("NetQoS Live Video Stream", frame)
-                
-            # Press 'q' to quit the video player
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
-                
-        except Exception as e:
-            # If the QoS Router drops or mangles packets, this exception hits!
-            # The video will visually stutter, proving Packet Loss!
+            # The data is already raw JPEG bytes! We yield it straight to the browser
+            yield (b'--frame\r\n'
+                   b'Content-Type: image/jpeg\r\n\r\n' + data + b'\r\n')
+        except socket.timeout:
             pass
-            
-    cv2.destroyAllWindows()
-    sock.close()
+        except Exception as e:
+            pass
+
+@app.get("/video")
+def video_feed():
+    return StreamingResponse(generate_frames(), media_type="multipart/x-mixed-replace; boundary=frame")
 
 if __name__ == "__main__":
-    run_server()
+    print("=========================================")
+    print("📺 LIVE WEB VIDEO SERVER LISTENING ON PORT 9007")
+    print("=========================================")
+    uvicorn.run(app, host="127.0.0.1", port=9007)

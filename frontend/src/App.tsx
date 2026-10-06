@@ -11,7 +11,8 @@ function App() {
     latency_s: 0,
     jitter_s: 0,
     packet_loss_rate: 0,
-    total_packets: 0
+    total_packets: 0,
+    recent_logs: []
   });
   
   const [schedulerInfo, setSchedulerInfo] = useState({
@@ -238,30 +239,69 @@ function App() {
         </div>
       </div>
 
-      {/* Queues Visualization */}
+      {/* Live Video Stream Section */}
       <div className="mt-8 bg-gray-800 p-6 rounded-xl border border-gray-700 shadow-lg">
-        <h2 className="text-xl font-semibold mb-6">Packet Queues</h2>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          {schedulerInfo.stats?.queues?.map((q, i) => (
-            <div key={i} className="bg-gray-900 p-4 rounded-lg border border-gray-800">
-              <div className="flex justify-between items-center mb-2">
-                <span className={`font-bold ${q.name === 'HIGH' ? 'text-red-400' : q.name === 'MEDIUM' ? 'text-yellow-400' : 'text-green-400'}`}>
-                  {q.name} QUEUE
-                </span>
-                <span className="text-sm text-gray-500">{q.length} pkts</span>
+        <h2 className="text-xl font-semibold mb-4 flex items-center gap-2 text-pink-400">
+          <PlayCircle size={24}/> Live Real-Time Video Stream
+        </h2>
+        <div className="w-full bg-black rounded-lg border border-gray-700 overflow-hidden flex flex-col items-center justify-center min-h-[400px] relative">
+           <img 
+              src="http://127.0.0.1:9007/video" 
+              alt="" 
+              className="max-h-[500px] w-full object-contain z-10" 
+              onError={(e) => { e.currentTarget.style.display = 'none'; }} 
+              onLoad={(e) => { e.currentTarget.style.display = 'block'; }} 
+           />
+           <div className="absolute inset-0 flex flex-col items-center justify-center text-gray-500 z-0">
+              <PlayCircle size={48} className="mb-2 opacity-50" />
+              <p>Waiting for Live Stream...</p>
+              <p className="text-xs mt-2 opacity-75">Run <code className="bg-gray-800 p-1 rounded text-pink-400">python video_server.py</code> and <code className="bg-gray-800 p-1 rounded text-pink-400">video_client.py</code></p>
+           </div>
+        </div>
+      </div>
+
+      {/* Lower Section: Queues and Logs */}
+      <div className="mt-8 grid grid-cols-1 lg:grid-cols-3 gap-8">
+        {/* Queues Visualization */}
+        <div className="lg:col-span-2 bg-gray-800 p-6 rounded-xl border border-gray-700 shadow-lg">
+          <h2 className="text-xl font-semibold mb-6">Packet Queues</h2>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            {schedulerInfo.stats?.queues?.map((q, i) => (
+              <div key={i} className="bg-gray-900 p-4 rounded-lg border border-gray-800">
+                <div className="flex justify-between items-center mb-2">
+                  <span className={`font-bold ${q.name === 'HIGH' ? 'text-red-400' : q.name === 'MEDIUM' ? 'text-yellow-400' : 'text-green-400'}`}>
+                    {q.name} QUEUE
+                  </span>
+                  <span className="text-sm text-gray-500">{q.length} pkts</span>
+                </div>
+                <div className="w-full bg-gray-800 rounded-full h-4 mb-4 overflow-hidden">
+                  <div 
+                    className={`h-4 rounded-full transition-all duration-300 ${q.name === 'HIGH' ? 'bg-red-500' : q.name === 'MEDIUM' ? 'bg-yellow-500' : 'bg-green-500'}`}
+                    style={{ width: `${Math.min((q.length / 100) * 100, 100)}%` }}
+                  ></div>
+                </div>
+                <div className="text-xs text-gray-400 flex justify-between">
+                  <span>Wait: {(q.avg_wait_time * 1000).toFixed(1)} ms</span>
+                  <span>Processed: {q.packets_processed}</span>
+                </div>
               </div>
-              <div className="w-full bg-gray-800 rounded-full h-4 mb-4 overflow-hidden">
-                <div 
-                  className={`h-4 rounded-full transition-all duration-300 ${q.name === 'HIGH' ? 'bg-red-500' : q.name === 'MEDIUM' ? 'bg-yellow-500' : 'bg-green-500'}`}
-                  style={{ width: `${Math.min((q.length / 100) * 100, 100)}%` }}
-                ></div>
+            ))}
+          </div>
+        </div>
+
+        {/* Live Packet Log Panel */}
+        <div className="bg-gray-800 p-6 rounded-xl border border-gray-700 shadow-lg flex flex-col h-full">
+          <h2 className="text-xl font-semibold mb-4 flex items-center gap-2"><Activity size={20}/> Live Packet Log</h2>
+          <div className="flex-grow bg-black rounded-lg p-3 overflow-y-auto border border-gray-700 text-xs font-mono" style={{maxHeight: "300px"}}>
+            {metrics.recent_logs && metrics.recent_logs.map((log, i) => (
+              <div key={i} className={`mb-1 ${log.type === 'DROP' ? 'text-red-400' : 'text-green-400'}`}>
+                [{log.type}] Flow {log.flow_id} | {log.size}B | {log.latency_ms}ms
               </div>
-              <div className="text-xs text-gray-400 flex justify-between">
-                <span>Wait: {(q.avg_wait_time * 1000).toFixed(1)} ms</span>
-                <span>Processed: {q.packets_processed}</span>
-              </div>
-            </div>
-          ))}
+            ))}
+            {(!metrics.recent_logs || metrics.recent_logs.length === 0) && (
+              <div className="text-gray-500 italic">Waiting for traffic...</div>
+            )}
+          </div>
         </div>
       </div>
     </div>

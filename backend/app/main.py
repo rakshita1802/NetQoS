@@ -55,7 +55,7 @@ policer = TokenBucketPolicer(rate_bps=1_000_000, capacity_bytes=100_000)
 def packet_received_callback(pkt, protocol):
     packet_size = len(pkt.payload) + 16
     if not policer.allow_packet(packet_size):
-        metrics_engine.record_drop()
+        metrics_engine.record_drop(packet_size, pkt.flow_id)
         return
     classifier.classify_and_enqueue(pkt, protocol)
 

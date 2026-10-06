@@ -21,6 +21,7 @@ class MetricsEngine:
         self.jitter_accumulator = 0.0
         
         self.packet_loss_count = 0
+        self.recent_logs = deque(maxlen=20)
         
     def record_transmission(self, pkt: PacketData):
         current_time = time.time()
@@ -39,9 +40,22 @@ class MetricsEngine:
             
         self.last_latency = latency
         self.cleanup_old_history(current_time)
+        
+        self.recent_logs.appendleft({
+            "type": "FWD",
+            "flow_id": pkt.flow_id,
+            "size": packet_size,
+            "latency_ms": round(latency * 1000, 2)
+        })
 
-    def record_drop(self):
+    def record_drop(self, pkt_size=0, flow_id=0):
         self.packet_loss_count += 1
+        self.recent_logs.appendleft({
+            "type": "DROP",
+            "flow_id": flow_id,
+            "size": pkt_size,
+            "latency_ms": 0
+        })
 
     def cleanup_old_history(self, current_time: float):
         while self.transmission_history and (current_time - self.transmission_history[0][0]) > self.history_window:
@@ -80,5 +94,6 @@ class MetricsEngine:
             "jitter_s": self.current_jitter,
             "packet_loss_rate": loss_rate,
             "total_packets": self.total_packets,
-            "total_dropped": self.packet_loss_count
+            "total_dropped": self.packet_loss_count,
+            "recent_logs": list(self.recent_logs)
         }
