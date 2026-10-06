@@ -16,6 +16,8 @@ from app.networking.traffic_generator import traffic_generator
 from app.networking.policer import TokenBucketPolicer
 from app.metrics.engine import MetricsEngine
 from app.db import init_db, insert_metric, get_historical_metrics
+from app.models.packet import PacketData
+import time
 
 app = FastAPI(title="NetQoS API")
 
@@ -63,6 +65,9 @@ receiver = TrafficReceiver("127.0.0.1", 9000, 9001, packet_received_callback)
 scheduler_task = None
 db_logger_task = None
 
+# Chat connections
+chat_connections = []
+
 async def db_logger_loop():
     while True:
         stats = metrics_engine.get_stats()
@@ -95,6 +100,15 @@ async def scheduler_loop():
                     forward_socket.sendto(pkt.payload, ("127.0.0.1", 9006))
                 except Exception:
                     pass
+            # --- LIVE INTERACTIVE CHAT LOGIC ---
+            elif pkt.flow_id == 997:
+                msg = pkt.payload.decode('utf-8', errors='ignore')
+                for ws in chat_connections:
+                    try:
+                        # Broadcast the delayed message to all chat clients!
+                        asyncio.create_task(ws.send_text(msg))
+                    except Exception:
+                        pass
             # --------------------------------
             
             # Simulate transmission delay to enforce output bandwidth
@@ -200,3 +214,19 @@ async def websocket_endpoint(websocket: WebSocket):
             await asyncio.sleep(0.5) # 2 Hz update rate
     except WebSocketDisconnect:
         print("WebSocket client disconnected")
+
+@app.websocket("/ws/chat")
+async def chat_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    chat_connections.append(websocket)
+    try:
+        while True:
+            text = await websocket.receive_text()
+            # Wrap the chat message in a packet and push it into the router!
+            # Flow 997 is our Chat Protocol.
+            payload = text.encode('utf-8')
+            pkt = PacketData(timestamp=time.time(), flow_id=997, seq_num=0, payload=payload)
+            # Route it via UDP
+            classifier.classify_and_enqueue(pkt, "UDP")
+    except WebSocketDisconnect:
+        chat_connections.remove(websocket)

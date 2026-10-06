@@ -25,6 +25,10 @@ function App() {
   const [history, setHistory] = useState([]);
   const [isHistoricalView, setIsHistoricalView] = useState(false);  
   const [firewallEnabled, setFirewallEnabled] = useState(false);
+  const [chatMessages, setChatMessages] = useState<string[]>([]);
+  const [chatInput, setChatInput] = useState('');
+  const [chatWs, setChatWs] = useState<WebSocket | null>(null);
+
   const [flowConfig, setFlowConfig] = useState({
     flow_id: 1,
     protocol: 'TCP',
@@ -57,9 +61,25 @@ function App() {
         return newHist;
       });
     };
+
+    const chatSocket = new WebSocket(`${WS_BASE}/chat`);
+    chatSocket.onmessage = (event) => {
+      setChatMessages(prev => [...prev, event.data].slice(-10));
+    };
+    setChatWs(chatSocket);
     
-    return () => ws.close();
-  }, []);
+    return () => {
+      ws.close();
+      chatSocket.close();
+    };
+  }, [isHistoricalView]);
+
+  const sendChatMessage = () => {
+    if (chatWs && chatInput.trim() !== '') {
+      chatWs.send(chatInput);
+      setChatInput('');
+    }
+  };
 
   const startTraffic = async () => {
     await fetch(`${API_BASE}/traffic/start`, {
@@ -302,6 +322,35 @@ function App() {
               <div className="text-gray-500 italic">Waiting for traffic...</div>
             )}
           </div>
+        </div>
+      </div>
+
+      {/* Interactive QoS Chat Room */}
+      <div className="mt-8 bg-gray-800 p-6 rounded-xl border border-gray-700 shadow-lg">
+        <h2 className="text-xl font-semibold mb-4 text-green-400 flex items-center gap-2">
+          <Activity size={24}/> Interactive QoS Chat Room
+        </h2>
+        <p className="text-sm text-gray-400 mb-4">
+          Messages typed here are physically routed through the UDP QoS Queues (Flow 997). If you heavily congest the network and place this in the Low Priority queue, your chat messages will lag or be dropped entirely!
+        </p>
+        <div className="w-full bg-black rounded-lg border border-gray-700 p-4 min-h-[150px] mb-4 flex flex-col overflow-y-auto" style={{maxHeight: "200px"}}>
+          {chatMessages.map((msg, i) => (
+             <div key={i} className="text-green-300 font-mono text-sm mb-1">{`> ${msg}`}</div>
+          ))}
+          {chatMessages.length === 0 && <div className="text-gray-600 italic">Type a message to send it through the router...</div>}
+        </div>
+        <div className="flex w-full gap-2">
+          <input 
+            type="text" 
+            value={chatInput} 
+            onChange={(e) => setChatInput(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && sendChatMessage()}
+            className="flex-grow bg-gray-700 text-white border border-gray-600 rounded px-4 py-2 outline-none focus:border-green-500"
+            placeholder="Type a message to route..." 
+          />
+          <button onClick={sendChatMessage} className="bg-green-600 hover:bg-green-500 text-white px-8 py-2 rounded font-bold transition-colors">
+            Send Message
+          </button>
         </div>
       </div>
     </div>
