@@ -19,5 +19,3 @@ build/
 # DB
 *.sqlite3
 *.db
-
-report/
