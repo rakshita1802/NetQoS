@@ -177,7 +177,24 @@ Clicking any wire packet in the **Router Control Plane (NOC)** launches an inter
   * Standard 3-column Wireshark view (Hex Offset, Byte pairs in groups of 8, and ASCII decoded text showing magic headers like `JFIF`).
   * Instant 1-click clipboard copy of raw hex strings.
 
+### 8.3 AirDrop Secure File Transfer & TCP Sliding Window Visualizer (Flow 999)
+In the Enterprise Workspace, users can drag and drop any PDF, image, or firmware file into an AirDrop-style dropzone:
+* **Byte-Slicing into 1KB Datagrams**: Files are sliced into 1024-byte binary datagrams with sequential sequence numbers.
+* **Block-by-Block Visualizer**:
+  * 🟩 **Green Blocks = Acknowledged (ACK)**
+  * 🟨 **Yellow Blocks = In-Flight (Waiting for ACK)**
+  * 🟥 **Red Blocks = Dropped / Retransmitted (RETRY)**
+  * ⬜ **Dark Slate Blocks = Pending in Buffer**
+* **TCP Flow & Congestion Control ($cwnd$ & $rwnd$)**:
+  * Models TCP Reno **Slow Start** (exponential $cwnd$ growth), **Congestion Avoidance** (additive increase AIMD), and **Fast Recovery**.
+  * A glowing sliding window frame physically shifts across the block grid as ACKs arrive from the NetQoS router.
+* **Interactive "Inject Loss" Button**:
+  * Simulates sudden packet drop on the wire, demonstrating $ssthresh$ halving, $cwnd$ reset, and automatic retransmission.
+* **Datagram Dissection**:
+  * Clicking any block displays offset bytes, RTT latency, and retry counts.
+
 ---
+
 
 ## 9. Conclusion and Future Scope
 **Conclusion:**
