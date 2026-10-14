@@ -9,8 +9,33 @@ import {
   Upload, FileText, Play, Pause, RotateCcw
 } from 'lucide-react';
 
-const API_BASE = "http://localhost:8000/api";
-const WS_BASE = "ws://localhost:8000/ws";
+const RAW_BACKEND = (import.meta.env.VITE_BACKEND_URL as string) || "localhost:8000";
+
+const getApiBase = () => {
+  if (RAW_BACKEND.startsWith("http://") || RAW_BACKEND.startsWith("https://")) {
+    return `${RAW_BACKEND.replace(/\/$/, "")}/api`;
+  }
+  const isHttps = typeof window !== 'undefined' && window.location.protocol === 'https:';
+  return `${isHttps ? 'https' : 'http'}://${RAW_BACKEND.replace(/\/$/, "")}/api`;
+};
+
+const getWsBase = () => {
+  if (RAW_BACKEND.startsWith("ws://") || RAW_BACKEND.startsWith("wss://")) {
+    return `${RAW_BACKEND.replace(/\/$/, "")}/ws`;
+  }
+  if (RAW_BACKEND.startsWith("https://")) {
+    return `${RAW_BACKEND.replace(/^https:\/\//, "wss://").replace(/\/$/, "")}/ws`;
+  }
+  if (RAW_BACKEND.startsWith("http://")) {
+    return `${RAW_BACKEND.replace(/^http:\/\//, "ws://").replace(/\/$/, "")}/ws`;
+  }
+  const isHttps = typeof window !== 'undefined' && window.location.protocol === 'https:';
+  return `${isHttps ? 'wss' : 'ws'}://${RAW_BACKEND.replace(/\/$/, "")}/ws`;
+};
+
+const API_BASE = getApiBase();
+const WS_BASE = getWsBase();
+
 
 interface PacketLog {
   type: string;

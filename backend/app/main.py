@@ -136,10 +136,14 @@ async def scheduler_loop():
 @app.on_event("startup")
 async def startup_event():
     init_db()
-    await receiver.start()
+    try:
+        await receiver.start()
+    except Exception as e:
+        print(f"[NetQoS Warning] Raw socket receiver could not bind: {e}. WebSockets will handle traffic.")
     global scheduler_task, db_logger_task
     scheduler_task = asyncio.create_task(scheduler_loop())
     db_logger_task = asyncio.create_task(db_logger_loop())
+
 
 @app.on_event("shutdown")
 async def shutdown_event():
