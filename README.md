@@ -161,11 +161,29 @@ This project simulates the exact architecture used by global internet providers 
 
 ---
 
-## 8. Conclusion and Future Scope
+## 8. Built-in Deep Packet Inspector (Mini Wireshark) & WebCam Streaming
+
+### 8.1 In-Browser WebCam Streaming (Zero Terminal Setup)
+Broadcasting video no longer requires running external Python scripts. Using the HTML5 `navigator.mediaDevices.getUserMedia()` API, the React dashboard captures camera video in real-time, fragments the frames into JPEG chunks, stamps them with the custom NetQoS 16-byte protocol header, and transmits them over WebSockets (`/ws/video_ingress`) directly to the router queue on **Flow 998**.
+
+### 8.2 Built-in "Mini Wireshark" Deep Packet Inspector (DPI)
+Clicking any wire packet in the **Router Control Plane (NOC)** launches an interactive, Wireshark-fidelity protocol analyzer directly in the browser:
+* **OSI Layer Dissection**:
+  * **Layer 2 (Data Link)**: Frame sizing, wire bits, loopback interface binding, and forwarding/policing action.
+  * **Layer 3 (Network - IPv4)**: Source/Destination IPs (`127.0.0.1`), Flow ID (`998`), TTL (`64`), QoS/DSCP priority mapping, and header checksums.
+  * **Layer 4 (Transport - UDP/TCP)**: Source/Destination ports (`9001` -> `9006`), Sequence numbering (`#86071`), Window size, and status flags (`FWD`, `DROP`, `ACK`, `SYN/RETRY`).
+  * **Layer 7 (Application)**: Protocol decoding (`MJPEG Video Stream (RTP payload)`, `Interactive Real-Time Messaging`, `Bulk File Transfer`) and payload byte length.
+* **Raw Hex Dump Dissector**:
+  * Standard 3-column Wireshark view (Hex Offset, Byte pairs in groups of 8, and ASCII decoded text showing magic headers like `JFIF`).
+  * Instant 1-click clipboard copy of raw hex strings.
+
+---
+
+## 9. Conclusion and Future Scope
 **Conclusion:**
-This project successfully demonstrates that software-defined networking, when coupled with Machine Learning, can proactively manage network congestion far better than traditional static routing algorithms. The implementation of a live, physical testbed using UDP video streams and interactive chat proved the mathematical latency improvements in real-time.
+This project successfully demonstrates that software-defined networking, when coupled with Machine Learning and Deep Packet Inspection, can proactively manage network congestion and provide granular protocol observability far better than traditional static routing appliances. The implementation of a live, physical testbed using UDP video streams, interactive chat, and in-browser Wireshark packet dissection proves the mathematical latency improvements and protocol framing in real-time.
 
 **Future Scope for Expansion:**
-1. **Deep Packet Inspection (DPI):** Implementing an engine to read raw packet payloads and automatically classify traffic (e.g., detecting Malware or BitTorrent traffic) without relying on Flow IDs.
-2. **Reinforcement Learning (DQN):** Upgrading the AI from a Regression model to a Deep Q-Network that actively learns the best routing paths through trial and error.
-3. **Geo-Routing & Load Balancing:** Expanding the architecture to include multiple destination servers, allowing the router to dynamically hot-swap video feeds to backup servers if a primary link fails.
+1. **Reinforcement Learning (DQN):** Upgrading the AI from a Regression model to a Deep Q-Network that actively learns the best routing paths through trial and error.
+2. **Geo-Routing & Load Balancing:** Expanding the architecture to include multiple destination servers, allowing the router to dynamically hot-swap video feeds to backup servers if a primary link fails.
+
