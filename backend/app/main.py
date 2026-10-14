@@ -3,8 +3,9 @@ import socket
 import os
 import time
 import json
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Response
 from fastapi.middleware.cors import CORSMiddleware
+
 
 from pydantic import BaseModel
 
@@ -21,9 +22,9 @@ from app.networking.policer import TokenBucketPolicer
 from app.metrics.engine import MetricsEngine
 from app.db import init_db, insert_metric, get_historical_metrics
 from app.models.packet import PacketData
-import time
-
 app = FastAPI(title="NetQoS API")
+SERVER_START_TIME = time.time()
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -209,6 +210,48 @@ async def get_status():
 @app.get("/api/metrics/history")
 async def get_history(limit: int = 100):
     return get_historical_metrics(limit)
+
+@app.get("/healthz")
+async def health_check():
+    return {
+        "status": "healthy",
+        "service": "netqos-sdwan-gateway",
+        "uptime_seconds": round(time.time() - SERVER_START_TIME, 1),
+        "scheduler": current_scheduler_name,
+        "firewall_active": policer.enabled,
+        "version": "2.4.0-enterprise"
+    }
+
+@app.get("/metrics/prometheus")
+async def prometheus_metrics():
+    stats = metrics_engine.get_stats()
+    q_stats = current_scheduler.get_stats().get("queues", [])
+    
+    lines = [
+        "# HELP netqos_throughput_bps Router egress throughput in bits per second",
+        "# TYPE netqos_throughput_bps gauge",
+        f"netqos_throughput_bps {stats.get('throughput_bps', 0):.2f}",
+        "# HELP netqos_latency_seconds Average queue buffer latency in seconds",
+        "# TYPE netqos_latency_seconds gauge",
+        f"netqos_latency_seconds {stats.get('latency_s', 0):.6f}",
+        "# HELP netqos_jitter_seconds Rolling jitter in seconds",
+        "# TYPE netqos_jitter_seconds gauge",
+        f"netqos_jitter_seconds {stats.get('jitter_s', 0):.6f}",
+        "# HELP netqos_packet_loss_ratio Ratio of dropped packets",
+        "# TYPE netqos_packet_loss_ratio gauge",
+        f"netqos_packet_loss_ratio {stats.get('packet_loss_rate', 0):.4f}",
+        "# HELP netqos_total_packets Total packets processed by router",
+        "# TYPE netqos_total_packets counter",
+        f"netqos_total_packets {stats.get('total_packets', 0)}",
+        "# HELP netqos_queue_length Number of packets waiting in each priority queue",
+        "# TYPE netqos_queue_length gauge",
+    ]
+    for q in q_stats:
+        lines.append(f'netqos_queue_length{{priority="{q.get("name")}"}} {q.get("length", 0)}')
+        lines.append(f'netqos_queue_bytes{{priority="{q.get("name")}"}} {q.get("bytes_waiting", 0)}')
+    
+    return Response(content="\n".join(lines) + "\n", media_type="text/plain; version=0.0.4")
+
 
 # --- WebSockets ---
 @app.websocket("/ws/metrics")
