@@ -2,8 +2,10 @@ import asyncio
 import socket
 import os
 import time
+import json
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+
 from pydantic import BaseModel
 
 from app.queues.packet_queue import PacketQueue
@@ -271,3 +273,46 @@ async def video_egress_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         if websocket in video_egress_connections:
             video_egress_connections.remove(websocket)
+
+@app.websocket("/ws/file_transfer")
+async def file_transfer_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    try:
+        while True:
+            msg_text = await websocket.receive_text()
+            data = json.loads(msg_text)
+            action = data.get("action", "SEND")
+            
+            if action == "SEND":
+                seq = data.get("seq", 0)
+                chunk_size = data.get("size", 1024)
+                packet_size = chunk_size + 16
+                
+                # Policer check (Token Bucket Firewall)
+                if not policer.allow_packet(packet_size):
+                    metrics_engine.record_drop(packet_size, 999, seq)
+                    await websocket.send_json({
+                        "type": "DROP",
+                        "seq": seq,
+                        "reason": "TOKEN_BUCKET_POLICED"
+                    })
+                    continue
+                
+                # Real packet for Flow 999 (File Transfer)
+                raw_payload = b'F' * chunk_size
+                pkt = PacketData(timestamp=time.time(), flow_id=999, seq_num=seq, payload=raw_payload)
+                classifier.classify_and_enqueue(pkt, "TCP")
+                
+                # Send back ACK for TCP sliding window
+                await websocket.send_json({
+                    "type": "ACK",
+                    "seq": seq,
+                    "ack_num": seq + 1,
+                    "rwnd": 16,
+                    "latency_ms": round(max(1.0, metrics_engine.last_latency * 1000 + 3.5), 1)
+                })
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+

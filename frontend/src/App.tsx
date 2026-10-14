@@ -1,11 +1,12 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { 
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer 
 } from 'recharts';
 import { 
   Activity, Zap, ShieldAlert, BarChart3, Clock,
   Video, MessageSquare, Send, Server, AlertTriangle, CheckCircle2, 
-  Users, Layers, Cpu, Camera, Flame, ArrowRight
+  Users, Layers, Cpu, Camera, Flame, ArrowRight,
+  Upload, FileText, Play, Pause, RotateCcw
 } from 'lucide-react';
 
 const API_BASE = "http://localhost:8000/api";
@@ -40,6 +41,15 @@ interface QueueStat {
   avg_wait_time: number;
   max_wait_time: number;
 }
+
+interface DatagramBlock {
+  seq: number;
+  size: number;
+  status: 'PENDING' | 'IN_FLIGHT' | 'ACKED' | 'DROPPED';
+  retries: number;
+  latencyMs?: number;
+}
+
 
 function App() {
   const [activeTab, setActiveTab] = useState<'workspace' | 'noc' | 'analytics'>('workspace');
@@ -95,6 +105,220 @@ function App() {
     }
     return lines.join('\n');
   };
+
+  // --- Sliding Window & TCP Flow Control State (Flow 999) ---
+  const [fileTransfer, setFileTransfer] = useState<{
+    fileName: string;
+    fileSize: number;
+    blocks: DatagramBlock[];
+    cwnd: number;
+    ssthresh: number;
+    rwnd: number;
+    sendBase: number;
+    nextSeq: number;
+    tcpState: 'SLOW_START' | 'CONGESTION_AVOIDANCE' | 'FAST_RECOVERY';
+    isTransferring: boolean;
+    isPaused: boolean;
+    ackedCount: number;
+    droppedCount: number;
+    rttDelay: number;
+    speedKbps: number;
+  }>({
+    fileName: 'executive_quarterly_report.pdf',
+    fileSize: 32 * 1024,
+    blocks: Array.from({ length: 32 }, (_, i) => ({
+      seq: i,
+      size: 1024,
+      status: 'PENDING',
+      retries: 0
+    })),
+    cwnd: 4,
+    ssthresh: 16,
+    rwnd: 16,
+    sendBase: 0,
+    nextSeq: 0,
+    tcpState: 'SLOW_START',
+    isTransferring: false,
+    isPaused: false,
+    ackedCount: 0,
+    droppedCount: 0,
+    rttDelay: 80,
+    speedKbps: 0
+  });
+
+  const [selectedBlock, setSelectedBlock] = useState<DatagramBlock | null>(null);
+  const [isDragOver, setIsDragOver] = useState(false);
+  const fileWsRef = useRef<WebSocket | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const loadPresetFile = (name: string, sizeKb: number) => {
+    const totalBlocks = Math.min(64, Math.max(8, sizeKb));
+    setFileTransfer({
+      fileName: name,
+      fileSize: totalBlocks * 1024,
+      blocks: Array.from({ length: totalBlocks }, (_, i) => ({
+        seq: i,
+        size: 1024,
+        status: 'PENDING',
+        retries: 0
+      })),
+      cwnd: 4,
+      ssthresh: 16,
+      rwnd: 16,
+      sendBase: 0,
+      nextSeq: 0,
+      tcpState: 'SLOW_START',
+      isTransferring: false,
+      isPaused: false,
+      ackedCount: 0,
+      droppedCount: 0,
+      rttDelay: 80,
+      speedKbps: 0
+    });
+    setSelectedBlock(null);
+  };
+
+  const handleManualDropInjection = () => {
+    setFileTransfer(prev => {
+      const blocks = [...prev.blocks];
+      const targetIdx = Math.min(prev.sendBase + 1, blocks.length - 1);
+      if (blocks[targetIdx] && blocks[targetIdx].status !== 'ACKED') {
+        blocks[targetIdx] = {
+          ...blocks[targetIdx],
+          status: 'DROPPED',
+          retries: blocks[targetIdx].retries + 1
+        };
+        const newSsthresh = Math.max(2, Math.floor(prev.cwnd / 2));
+        return {
+          ...prev,
+          blocks,
+          droppedCount: prev.droppedCount + 1,
+          ssthresh: newSsthresh,
+          cwnd: 2,
+          tcpState: 'FAST_RECOVERY'
+        };
+      }
+      return prev;
+    });
+  };
+
+  useEffect(() => {
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(`${WS_BASE}/file_transfer`);
+      fileWsRef.current = ws;
+    } catch (e) {}
+    return () => {
+      if (ws) ws.close();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!fileTransfer.isTransferring || fileTransfer.isPaused) return;
+
+    if (fileTransfer.sendBase >= fileTransfer.blocks.length) {
+      setFileTransfer(prev => ({ ...prev, isTransferring: false, speedKbps: 0 }));
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      setFileTransfer(prev => {
+        const blocks = [...prev.blocks];
+        const effectiveWindow = Math.min(Math.floor(prev.cwnd), prev.rwnd);
+        let nextSeq = prev.nextSeq;
+
+        // Dispatch datagrams in current sliding window
+        while (nextSeq < prev.sendBase + effectiveWindow && nextSeq < blocks.length) {
+          if (blocks[nextSeq].status === 'PENDING' || blocks[nextSeq].status === 'DROPPED') {
+            blocks[nextSeq] = {
+              ...blocks[nextSeq],
+              status: 'IN_FLIGHT'
+            };
+            if (fileWsRef.current && fileWsRef.current.readyState === WebSocket.OPEN) {
+              fileWsRef.current.send(JSON.stringify({
+                action: "SEND",
+                seq: nextSeq,
+                size: blocks[nextSeq].size
+              }));
+            }
+          }
+          nextSeq++;
+        }
+
+        let newAcked = prev.ackedCount;
+        let newDropped = prev.droppedCount;
+        let newCwnd = prev.cwnd;
+        let newSsthresh = prev.ssthresh;
+        let newTcpState = prev.tcpState;
+        let newSendBase = prev.sendBase;
+
+        for (let i = prev.sendBase; i < nextSeq; i++) {
+          if (blocks[i].status === 'IN_FLIGHT') {
+            const isCongested = firewallEnabled || isSimulatingDDoS || (metrics.packet_loss_rate > 0.05);
+            const dropChance = isCongested ? 0.35 : 0.02;
+            const shouldDrop = Math.random() < dropChance && blocks[i].retries < 2;
+
+            if (shouldDrop) {
+              blocks[i] = {
+                ...blocks[i],
+                status: 'DROPPED',
+                retries: blocks[i].retries + 1
+              };
+              newDropped++;
+              newSsthresh = Math.max(2, Math.floor(newCwnd / 2));
+              newCwnd = 2;
+              newTcpState = 'FAST_RECOVERY';
+              nextSeq = Math.min(nextSeq, i);
+              break;
+            } else {
+              blocks[i] = {
+                ...blocks[i],
+                status: 'ACKED',
+                latencyMs: Math.round(Math.random() * 8 + 4)
+              };
+              newAcked++;
+
+              if (newTcpState === 'SLOW_START') {
+                newCwnd += 1;
+                if (newCwnd >= newSsthresh) {
+                  newTcpState = 'CONGESTION_AVOIDANCE';
+                }
+              } else if (newTcpState === 'CONGESTION_AVOIDANCE') {
+                newCwnd += 1 / Math.floor(newCwnd);
+              } else if (newTcpState === 'FAST_RECOVERY') {
+                newCwnd += 0.5;
+                if (newCwnd >= newSsthresh) {
+                  newTcpState = 'CONGESTION_AVOIDANCE';
+                }
+              }
+            }
+          }
+        }
+
+        while (newSendBase < blocks.length && blocks[newSendBase].status === 'ACKED') {
+          newSendBase++;
+        }
+
+        const speed = Math.round((newAcked * 1024 * 8) / (Math.max(1, (Date.now() % 10000)) / 1000) / 100) * 10;
+
+        return {
+          ...prev,
+          blocks,
+          nextSeq,
+          sendBase: newSendBase,
+          cwnd: Math.min(newCwnd, 32),
+          ssthresh: newSsthresh,
+          tcpState: newTcpState,
+          ackedCount: newAcked,
+          droppedCount: newDropped,
+          speedKbps: Math.max(110, speed)
+        };
+      });
+    }, fileTransfer.rttDelay);
+
+    return () => clearTimeout(timer);
+  }, [fileTransfer.isTransferring, fileTransfer.isPaused, fileTransfer.sendBase, fileTransfer.nextSeq, fileTransfer.rttDelay, firewallEnabled, isSimulatingDDoS, metrics.packet_loss_rate]);
+
 
   const [flowConfig, setFlowConfig] = useState({
     flow_id: 1,
@@ -678,6 +902,356 @@ function App() {
                     <Send size={15} />
                   </button>
                 </div>
+              </div>
+
+            </div>
+
+            {/* ========================================================================= */}
+            {/* AIRDROP SECURE FILE VAULT & TCP SLIDING WINDOW VISUALIZER (FLOW 999)      */}
+            {/* ========================================================================= */}
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-6">
+              
+              {/* Card Header & TCP Status */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-slate-800 gap-3">
+                <div className="flex items-center gap-3">
+                  <div className="p-2.5 bg-indigo-950/80 border border-indigo-700/60 rounded-xl text-indigo-400">
+                    <Upload size={22} />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h3 className="font-bold text-base text-white">AirDrop Secure File Transfer & TCP Sliding Window Visualizer</h3>
+                      <span className="text-[10px] bg-slate-800 text-cyan-400 px-2 py-0.5 rounded font-mono font-bold">
+                        FLOW 999
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-400">
+                      Slices files into 1KB binary datagrams and models TCP Reno Flow Control & Congestion Window (<code className="text-indigo-400">cwnd</code>).
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-[10px] font-mono bg-slate-950 text-slate-400 px-2.5 py-1 rounded-lg border border-slate-800">
+                    MSS: 1024 B
+                  </span>
+                  <div className={`text-[10px] font-mono font-bold px-3 py-1 rounded-lg border flex items-center gap-1.5 shadow-sm ${
+                    fileTransfer.tcpState === 'SLOW_START' 
+                      ? 'bg-indigo-950/80 border-indigo-700 text-indigo-300' 
+                      : fileTransfer.tcpState === 'CONGESTION_AVOIDANCE'
+                      ? 'bg-purple-950/80 border-purple-700 text-purple-300'
+                      : 'bg-rose-950/80 border-rose-700 text-rose-300 animate-pulse'
+                  }`}>
+                    <span className={`h-1.5 w-1.5 rounded-full ${
+                      fileTransfer.tcpState === 'SLOW_START' ? 'bg-indigo-400 animate-ping' :
+                      fileTransfer.tcpState === 'CONGESTION_AVOIDANCE' ? 'bg-purple-400' : 'bg-rose-400 animate-bounce'
+                    }`}></span>
+                    {fileTransfer.tcpState === 'SLOW_START' && '⚡ SLOW START (Exponential Growth)'}
+                    {fileTransfer.tcpState === 'CONGESTION_AVOIDANCE' && '⚖️ CONGESTION AVOIDANCE (AIMD)'}
+                    {fileTransfer.tcpState === 'FAST_RECOVERY' && '⚠️ PACKET LOSS / FAST RETRANSMIT'}
+                  </div>
+                </div>
+              </div>
+
+              {/* Top Controls: Dropzone + 1-Click Preset Files + Control Buttons */}
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-center">
+                
+                {/* AirDrop Drag & Drop Zone */}
+                <div 
+                  onDragOver={(e) => { e.preventDefault(); setIsDragOver(true); }}
+                  onDragLeave={() => setIsDragOver(false)}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    setIsDragOver(false);
+                    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+                      const f = e.dataTransfer.files[0];
+                      loadPresetFile(f.name, Math.max(8, Math.ceil(f.size / 1024)));
+                    }
+                  }}
+                  onClick={() => fileInputRef.current?.click()}
+                  className={`lg:col-span-6 border-2 border-dashed rounded-xl p-4 cursor-pointer transition flex items-center justify-between gap-4 group ${
+                    isDragOver 
+                      ? 'border-indigo-400 bg-indigo-950/40 text-indigo-200' 
+                      : 'border-slate-800 hover:border-slate-700 bg-slate-950/60 text-slate-400'
+                  }`}
+                >
+                  <input 
+                    type="file" 
+                    ref={fileInputRef} 
+                    className="hidden" 
+                    onChange={(e) => {
+                      if (e.target.files && e.target.files[0]) {
+                        const f = e.target.files[0];
+                        loadPresetFile(f.name, Math.max(8, Math.ceil(f.size / 1024)));
+                      }
+                    }} 
+                  />
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 bg-slate-900 group-hover:bg-indigo-950/60 rounded-lg text-indigo-400 transition">
+                      <FileText size={20} />
+                    </div>
+                    <div>
+                      <div className="text-xs font-bold text-slate-200 group-hover:text-indigo-300 transition">
+                        {fileTransfer.fileName}
+                      </div>
+                      <div className="text-[10px] text-slate-500 font-mono">
+                        {(fileTransfer.fileSize / 1024).toFixed(0)} KB • {fileTransfer.blocks.length} Binary Datagrams (1KB chunks)
+                      </div>
+                    </div>
+                  </div>
+                  <span className="text-[10px] bg-slate-800 group-hover:bg-indigo-600 group-hover:text-white text-slate-300 font-bold px-2.5 py-1 rounded-lg transition whitespace-nowrap">
+                    Browse File
+                  </span>
+                </div>
+
+                {/* Quick 1-Click Viva Presets & Action Buttons */}
+                <div className="lg:col-span-6 flex flex-col gap-2.5">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Presets:</span>
+                    <button
+                      onClick={() => loadPresetFile('quarterly_contract.pdf', 32)}
+                      className="text-[10px] font-mono bg-slate-950 hover:bg-slate-800 text-slate-300 px-2 py-1 rounded border border-slate-800 transition"
+                    >
+                      📄 contract.pdf (32KB)
+                    </button>
+                    <button
+                      onClick={() => loadPresetFile('satellite_blueprint.png', 48)}
+                      className="text-[10px] font-mono bg-slate-950 hover:bg-slate-800 text-slate-300 px-2 py-1 rounded border border-slate-800 transition"
+                    >
+                      🖼️ blueprint.png (48KB)
+                    </button>
+                    <button
+                      onClick={() => loadPresetFile('firmware_blob_v3.bin', 64)}
+                      className="text-[10px] font-mono bg-slate-950 hover:bg-slate-800 text-slate-300 px-2 py-1 rounded border border-slate-800 transition"
+                    >
+                      📦 firmware.bin (64KB)
+                    </button>
+                  </div>
+
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button
+                      onClick={() => {
+                        if (fileTransfer.sendBase >= fileTransfer.blocks.length) {
+                          loadPresetFile(fileTransfer.fileName, fileTransfer.blocks.length);
+                        }
+                        setFileTransfer(prev => ({
+                          ...prev,
+                          isTransferring: !prev.isTransferring || prev.isPaused,
+                          isPaused: false
+                        }));
+                      }}
+                      className={`text-xs font-bold px-3 py-1.5 rounded-xl transition flex items-center gap-1.5 shadow-sm ${
+                        fileTransfer.isTransferring && !fileTransfer.isPaused
+                          ? 'bg-amber-600 hover:bg-amber-500 text-white'
+                          : 'bg-indigo-600 hover:bg-indigo-500 text-white'
+                      }`}
+                    >
+                      {fileTransfer.isTransferring && !fileTransfer.isPaused ? (
+                        <><Pause size={13} /> Pause Window</>
+                      ) : (
+                        <><Play size={13} /> {fileTransfer.sendBase >= fileTransfer.blocks.length ? 'Restart Transfer' : 'Start TCP Transfer'}</>
+                      )}
+                    </button>
+
+                    <button
+                      onClick={() => loadPresetFile(fileTransfer.fileName, fileTransfer.blocks.length)}
+                      className="bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold px-3 py-1.5 rounded-xl border border-slate-700 transition flex items-center gap-1.5"
+                    >
+                      <RotateCcw size={13} /> Reset
+                    </button>
+
+                    <button
+                      onClick={handleManualDropInjection}
+                      className="bg-rose-950 hover:bg-rose-900 text-rose-300 text-xs font-bold px-3 py-1.5 rounded-xl border border-rose-800/80 transition flex items-center gap-1.5"
+                      title="Artificially drop an in-flight packet to watch TCP Fast Recovery and cwnd reduction"
+                    >
+                      <AlertTriangle size={13} className="text-rose-400" /> Inject Loss
+                    </button>
+
+                    {/* Simulation RTT Delay Slider */}
+                    <div className="flex items-center gap-1.5 bg-slate-950 px-2.5 py-1 rounded-xl border border-slate-800 text-[10px] text-slate-400 ml-auto">
+                      <span>RTT Delay:</span>
+                      <input 
+                        type="range" 
+                        min="20" 
+                        max="200" 
+                        step="10"
+                        value={fileTransfer.rttDelay}
+                        onChange={(e) => setFileTransfer(prev => ({ ...prev, rttDelay: Number(e.target.value) }))}
+                        className="w-16 accent-indigo-500 cursor-pointer"
+                      />
+                      <span className="font-mono text-indigo-400">{fileTransfer.rttDelay}ms</span>
+                    </div>
+                  </div>
+                </div>
+
+              </div>
+
+              {/* TCP Sliding Window 4-Card HUD */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3 font-mono">
+                
+                {/* 1. Congestion Window (cwnd) */}
+                <div className="bg-slate-950 border border-slate-800/80 p-3.5 rounded-xl">
+                  <div className="text-[10px] text-slate-400 uppercase tracking-wider mb-1">
+                    Congestion Window (cwnd)
+                  </div>
+                  <div className="text-lg font-bold text-indigo-400 flex items-baseline gap-1.5">
+                    <span>{fileTransfer.cwnd.toFixed(1)} KB</span>
+                    <span className="text-[10px] text-slate-500 font-normal">({Math.floor(fileTransfer.cwnd)} MSS)</span>
+                  </div>
+                  <div className="text-[10px] text-slate-500 mt-1 flex justify-between">
+                    <span>ssthresh: {fileTransfer.ssthresh} KB</span>
+                    <span className={fileTransfer.cwnd < fileTransfer.ssthresh ? "text-cyan-400" : "text-purple-400"}>
+                      {fileTransfer.cwnd < fileTransfer.ssthresh ? "Phase 1: Slow Start" : "Phase 2: Congestion Avoidance"}
+                    </span>
+                  </div>
+                </div>
+
+                {/* 2. Receiver Window (rwnd) */}
+                <div className="bg-slate-950 border border-slate-800/80 p-3.5 rounded-xl">
+                  <div className="text-[10px] text-slate-400 uppercase tracking-wider mb-1">
+                    Flow Control Window (rwnd)
+                  </div>
+                  <div className="text-lg font-bold text-cyan-400 flex items-baseline gap-1.5">
+                    <span>{fileTransfer.rwnd} KB</span>
+                    <span className="text-[10px] text-slate-500 font-normal">(16 MSS limit)</span>
+                  </div>
+                  <div className="text-[10px] text-slate-500 mt-1">
+                    Effective: <strong className="text-slate-300">{Math.min(Math.floor(fileTransfer.cwnd), fileTransfer.rwnd)} KB</strong> in-flight max
+                  </div>
+                </div>
+
+                {/* 3. Progress & Goodput */}
+                <div className="bg-slate-950 border border-slate-800/80 p-3.5 rounded-xl">
+                  <div className="text-[10px] text-slate-400 uppercase tracking-wider mb-1">
+                    Delivery Progress
+                  </div>
+                  <div className="text-lg font-bold text-emerald-400 flex items-baseline gap-1.5">
+                    <span>{((fileTransfer.ackedCount / fileTransfer.blocks.length) * 100).toFixed(0)}%</span>
+                    <span className="text-[10px] text-slate-500 font-normal">({fileTransfer.ackedCount} / {fileTransfer.blocks.length} KB)</span>
+                  </div>
+                  <div className="w-full bg-slate-900 rounded-full h-1.5 mt-2 overflow-hidden">
+                    <div 
+                      className="bg-emerald-500 h-full transition-all duration-200"
+                      style={{ width: `${(fileTransfer.ackedCount / fileTransfer.blocks.length) * 100}%` }}
+                    />
+                  </div>
+                </div>
+
+                {/* 4. Retransmission & Drops */}
+                <div className="bg-slate-950 border border-slate-800/80 p-3.5 rounded-xl">
+                  <div className="text-[10px] text-slate-400 uppercase tracking-wider mb-1">
+                    Loss / Retransmissions
+                  </div>
+                  <div className={`text-lg font-bold flex items-baseline gap-1.5 ${
+                    fileTransfer.droppedCount > 0 ? 'text-rose-400' : 'text-slate-400'
+                  }`}>
+                    <span>{fileTransfer.droppedCount} Retries</span>
+                    <span className="text-[10px] text-slate-500 font-normal">
+                      ({fileTransfer.droppedCount > 0 ? 'Fast Recovery' : 'Clean Link'})
+                    </span>
+                  </div>
+                  <div className="text-[10px] text-slate-500 mt-1">
+                    Goodput: <strong className="text-emerald-400">{fileTransfer.speedKbps} KB/s</strong>
+                  </div>
+                </div>
+
+              </div>
+
+              {/* Interactive Sliding Window Grid Container */}
+              <div className="space-y-2">
+                
+                {/* Visual Legend Bar */}
+                <div className="flex flex-wrap items-center justify-between text-xs bg-slate-950 px-4 py-2 rounded-xl border border-slate-800 gap-2">
+                  <div className="flex items-center gap-4 text-[11px] font-mono">
+                    <span className="flex items-center gap-1.5 text-emerald-400 font-bold">
+                      <span className="h-3 w-3 rounded bg-emerald-500/20 border border-emerald-500 inline-block"></span>
+                      ACK ({fileTransfer.ackedCount})
+                    </span>
+                    <span className="flex items-center gap-1.5 text-amber-300 font-bold">
+                      <span className="h-3 w-3 rounded bg-amber-500/20 border border-amber-400 inline-block animate-pulse"></span>
+                      In-Flight ({fileTransfer.blocks.filter(b => b.status === 'IN_FLIGHT').length})
+                    </span>
+                    <span className="flex items-center gap-1.5 text-rose-400 font-bold">
+                      <span className="h-3 w-3 rounded bg-rose-500/20 border border-rose-500 inline-block"></span>
+                      Retransmit ({fileTransfer.droppedCount})
+                    </span>
+                    <span className="flex items-center gap-1.5 text-slate-500">
+                      <span className="h-3 w-3 rounded bg-slate-900 border border-slate-800 inline-block"></span>
+                      Pending ({fileTransfer.blocks.filter(b => b.status === 'PENDING').length})
+                    </span>
+                  </div>
+
+                  <div className="text-[11px] font-mono text-indigo-400">
+                    Active Window Span: <strong className="text-white">[{fileTransfer.sendBase} ... {Math.min(fileTransfer.blocks.length - 1, fileTransfer.sendBase + Math.min(Math.floor(fileTransfer.cwnd), fileTransfer.rwnd) - 1)}]</strong>
+                  </div>
+                </div>
+
+                {/* Block Grid */}
+                <div className="grid grid-cols-6 sm:grid-cols-8 md:grid-cols-12 lg:grid-cols-16 gap-2 bg-black/70 p-4 rounded-xl border border-slate-800 max-h-72 overflow-y-auto">
+                  {fileTransfer.blocks.map((block) => {
+                    const effectiveWindow = Math.min(Math.floor(fileTransfer.cwnd), fileTransfer.rwnd);
+                    const isInWindow = block.seq >= fileTransfer.sendBase && block.seq < fileTransfer.sendBase + effectiveWindow;
+                    
+                    return (
+                      <div
+                        key={block.seq}
+                        onClick={() => setSelectedBlock(block)}
+                        className={`p-2 rounded-lg border text-center font-mono cursor-pointer transition select-none relative group ${
+                          block.status === 'ACKED'
+                            ? 'bg-emerald-950/40 border-emerald-500 text-emerald-300 hover:bg-emerald-900/50'
+                            : block.status === 'IN_FLIGHT'
+                            ? 'bg-amber-950/60 border-amber-400 text-amber-200 animate-pulse ring-1 ring-amber-400'
+                            : block.status === 'DROPPED'
+                            ? 'bg-rose-950/70 border-rose-500 text-rose-200 animate-bounce ring-2 ring-rose-500'
+                            : 'bg-slate-950/90 border-slate-800/80 text-slate-500 hover:border-slate-700'
+                        } ${isInWindow ? 'shadow-[0_0_12px_rgba(99,102,241,0.25)] ring-1 ring-indigo-500/50' : ''}`}
+                        title={`Datagram #${block.seq} • 1KB • Click to inspect`}
+                      >
+                        {/* Sliding window top pip indicator */}
+                        {isInWindow && (
+                          <div className="absolute -top-1 left-1/2 -translate-x-1/2 h-1 w-3 bg-indigo-500 rounded-full"></div>
+                        )}
+                        <div className="text-[11px] font-bold">
+                          #{block.seq.toString().padStart(2, '0')}
+                        </div>
+                        <div className="text-[9px] opacity-75 mt-0.5">
+                          1 KB
+                        </div>
+                        {block.retries > 0 && (
+                          <div className="text-[8px] text-rose-400 font-bold">
+                            R{block.retries}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Selected Block Inspection Strip */}
+                {selectedBlock && (
+                  <div className="p-3 bg-slate-950 border border-indigo-900/60 rounded-xl flex items-center justify-between text-xs font-mono animate-fade-in">
+                    <div className="flex items-center gap-3">
+                      <span className="text-indigo-400 font-bold">🦈 Datagram #{selectedBlock.seq} Dissection:</span>
+                      <span className="text-slate-300">Offset: {selectedBlock.seq * 1024} - {(selectedBlock.seq + 1) * 1024 - 1} bytes</span>
+                      <span className="text-slate-600">|</span>
+                      <span>Status: <strong className={
+                        selectedBlock.status === 'ACKED' ? 'text-emerald-400' :
+                        selectedBlock.status === 'IN_FLIGHT' ? 'text-amber-400' :
+                        selectedBlock.status === 'DROPPED' ? 'text-rose-400' : 'text-slate-400'
+                      }>{selectedBlock.status}</strong></span>
+                      <span className="text-slate-600">|</span>
+                      <span>Retries: {selectedBlock.retries}</span>
+                      {selectedBlock.latencyMs && <span>RTT: {selectedBlock.latencyMs}ms</span>}
+                    </div>
+                    <button 
+                      onClick={() => setSelectedBlock(null)}
+                      className="text-slate-500 hover:text-white text-[10px]"
+                    >
+                      ✕ Close
+                    </button>
+                  </div>
+                )}
+
               </div>
 
             </div>
