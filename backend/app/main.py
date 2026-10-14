@@ -1,5 +1,7 @@
 import asyncio
 import socket
+import os
+import time
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -61,12 +63,16 @@ def packet_received_callback(pkt, protocol):
         return
     classifier.classify_and_enqueue(pkt, protocol)
 
-receiver = TrafficReceiver("127.0.0.1", 9000, 9001, packet_received_callback)
+ROUTER_HOST = os.getenv("ROUTER_HOST", "0.0.0.0")
+FORWARD_HOST = os.getenv("FORWARD_HOST", "127.0.0.1")
+
+receiver = TrafficReceiver(ROUTER_HOST, 9000, 9001, packet_received_callback)
 scheduler_task = None
 db_logger_task = None
 
 # Chat connections
 chat_connections = []
+video_egress_connections = []
 
 async def db_logger_loop():
     while True:
@@ -91,15 +97,20 @@ async def scheduler_loop():
             # If the packet belongs to our Real File App (flow_id = 999), forward the raw payload to the File Server
             if pkt.flow_id == 999:
                 try:
-                    forward_socket.sendto(pkt.payload, ("127.0.0.1", 9005))
+                    forward_socket.sendto(pkt.payload, (FORWARD_HOST, 9005))
                 except Exception:
                     pass
             # --- LIVE VIDEO STREAMING LOGIC ---
             elif pkt.flow_id == 998:
                 try:
-                    forward_socket.sendto(pkt.payload, ("127.0.0.1", 9006))
+                    forward_socket.sendto(pkt.payload, (FORWARD_HOST, 9006))
                 except Exception:
                     pass
+                for ws in video_egress_connections:
+                    try:
+                        asyncio.create_task(ws.send_bytes(pkt.payload))
+                    except Exception:
+                        pass
             # --- LIVE INTERACTIVE CHAT LOGIC ---
             elif pkt.flow_id == 997:
                 msg = pkt.payload.decode('utf-8', errors='ignore')
@@ -230,3 +241,33 @@ async def chat_endpoint(websocket: WebSocket):
             classifier.classify_and_enqueue(pkt, "UDP")
     except WebSocketDisconnect:
         chat_connections.remove(websocket)
+
+@app.websocket("/ws/video_ingress")
+async def video_ingress_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    seq_num = 0
+    try:
+        while True:
+            data = await websocket.receive_bytes()
+            packet_size = len(data) + 16
+            if not policer.allow_packet(packet_size):
+                metrics_engine.record_drop(packet_size, 998)
+                continue
+            pkt = PacketData(timestamp=time.time(), flow_id=998, seq_num=seq_num, payload=data)
+            seq_num += 1
+            classifier.classify_and_enqueue(pkt, "UDP")
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        pass
+
+@app.websocket("/ws/video_egress")
+async def video_egress_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    video_egress_connections.append(websocket)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        if websocket in video_egress_connections:
+            video_egress_connections.remove(websocket)
