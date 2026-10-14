@@ -59,54 +59,51 @@ This project directly implements foundational concepts spanning the entire OSI a
 The system models an **Enterprise SD-WAN Edge Gateway Topology** where multiple heterogeneous endpoints transmit traffic across an ingress link to the NetQoS Router, which enforces QoS policy before dispatching traffic to egress receivers:
 
 ```mermaid
-graph TD
-    subgraph Ingress_Clients ["Ingress Endpoints (Senders)"]
-        A1["🎥 WebCam Video Streamer\n(Flow 998 - UDP Port 9001 / WS Ingress)"]
-        A2["💬 Operations Team Chat\n(Flow 997 - WebSocket Ingress)"]
-        A3["📁 AirDrop File Transfer\n(Flow 999 - TCP Datagrams / WS Ingress)"]
-        A4["⚡ Synthetic Congestion Generator\n(Flows 1-100 - TCP/UDP Ingress Port 9000/9001)"]
+flowchart TD
+    subgraph Ingress_Clients["Ingress Endpoints (Senders)"]
+        A1["WebCam Video Streamer<br/>(Flow 998: UDP 9001 / WS)"]
+        A2["Operations Team Chat<br/>(Flow 997: WebSocket)"]
+        A3["AirDrop File Transfer<br/>(Flow 999: TCP Slices)"]
+        A4["Synthetic Traffic Gen<br/>(Flows 1-100: TCP/UDP)"]
     end
 
-    subgraph NetQoS_Gateway ["NetQoS Edge Gateway Router (Port 8000 / 9000 / 9001)"]
-        B1["🛡️ Ingress Token Bucket Policer\n(Rate: 1 Mbps | Burst: 100 KB)"]
-        B2["🔍 L3/L4 Flow Classifier & Parser\n(Flow ID & DSCP Mapping)"]
-        
-        subgraph Priority_Queues ["Multi-Queue Buffer System"]
-            Q_HIGH[("🔴 High Priority Queue\n(Flow 998: Video - RTP UDP)")]
-            Q_MED[("🟡 Medium Priority Queue\n(Flow 997: Interactive Chat)")]
-            Q_LOW[("🟢 Low Priority Queue\n(Flow 999: File Transfer / Bulk TCP)")]
-        end
-
-        B3{"⚙️ Packet Scheduling Engine\n[ FIFO | Strict PQ | WFQ (DRR) | ML-Adaptive ]"}
-        B4["🧠 ML Latency Regressor (SGDRegressor)\n(Predicts queue wait time & tunes weights)"]
-        B5["📊 Real-Time Metrics Engine\n(Throughput, Latency, Jitter, Packet Loss)"]
+    subgraph Router_Core["NetQoS Edge Gateway Router"]
+        B1["Ingress Token Bucket Policer<br/>(1 Mbps SLA Rate Limit)"]
+        B2["L3/L4 Flow Classifier & Parser"]
+        Q_HIGH["High Priority Queue<br/>(Flow 998 Video)"]
+        Q_MED["Medium Priority Queue<br/>(Flow 997 Chat)"]
+        Q_LOW["Low Priority Queue<br/>(Flow 999 File Transfer)"]
+        B3["Packet Scheduling Engine<br/>(FIFO, Priority, WFQ, ML-Adaptive)"]
+        B4["ML Latency Regressor<br/>(Online SGD Prediction)"]
+        B5["Metrics Engine<br/>(Throughput, Latency, Jitter)"]
     end
 
-    subgraph Egress_Receivers ["Egress Destinations (Receivers)"]
-        C1["📺 Egress Video Forwarder\n(UDP Port 9006 / WS Egress)"]
-        C2["💬 Team Chat Broadcast Channel\n(WebSocket Port 8000)"]
-        C3["💻 React Enterprise SD-WAN NOC\n(Live Telemetry & Wireshark Dissector)"]
-        C4["📈 Cloud Prometheus / Datadog\n(Metrics Endpoint: /metrics/prometheus)"]
+    subgraph Egress_Receivers["Egress Destinations (Receivers)"]
+        C1["Egress Video Forwarder<br/>(UDP 9006 / WS)"]
+        C2["Team Chat Channel<br/>(WebSocket Broadcast)"]
+        C3["React Enterprise NOC Dashboard"]
+        C4["Prometheus Metrics Exporter"]
     end
 
-    A1 -->|Raw UDP / WS| B1
-    A2 -->|WebSocket| B1
-    A3 -->|TCP Slices| B1
-    A4 -->|Socket Ingress| B1
+    A1 --> B1
+    A2 --> B1
+    A3 --> B1
+    A4 --> B1
 
-    B1 -->|Token Conforming| B2
-    B1 -.->|Non-Conforming| B_DROP["❌ Policed Packet Drop\n(Tail Drop Recorded)"]
+    B1 -->|Tokens Available| B2
+    B1 -.->|Rate Limit Exceeded| B_DROP["Policed Packet Drop"]
 
     B2 -->|Flow 998| Q_HIGH
     B2 -->|Flow 997| Q_MED
-    B2 -->|Flow 999 / Bulk| Q_LOW
+    B2 -->|Flow 999| Q_LOW
 
     Q_HIGH --> B3
     Q_MED --> B3
     Q_LOW --> B3
 
-    B3 <-->|Feedback & Weight Control| B4
-    B3 -->|Forwarded Packet| B5
+    B3 --> B4
+    B4 --> B3
+    B3 --> B5
 
     B5 --> C1
     B5 --> C2
@@ -190,17 +187,17 @@ The NetQoS router operates as a continuous, asynchronous packet processing pipel
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Client as 📹 Video / Chat / File Client
-    participant Policer as 🛡️ Token Bucket Policer
-    participant Classifier as 🔍 Traffic Classifier
-    participant Queues as 🗄️ Multi-Queue Buffer
-    participant Scheduler as ⚙️ Scheduler Engine
-    participant DPI as 🦈 Mini-Wireshark DPI & Egress
+    participant Client as Video / Chat / File Client
+    participant Policer as Token Bucket Policer
+    participant Classifier as Traffic Classifier
+    participant Queues as Multi-Queue Buffer
+    participant Scheduler as Scheduler Engine
+    participant DPI as Mini-Wireshark DPI
 
     Client->>Policer: Send Custom Datagram (Flow 998, Seq #101)
     alt Rate exceeds 1 Mbps SLA (Token Deficit)
         Policer-->>Policer: DROP Packet (Policed Loss)
-        Policer->>DPI: Record [DROP] Log (Size, Flow 998, Latency=0)
+        Policer->>DPI: Record DROP Log (Size, Flow 998, Latency=0)
     else Tokens Available
         Policer->>Classifier: Forward Packet
         Classifier->>Classifier: Unpack Header (Read Flow ID = 998)
@@ -209,7 +206,7 @@ sequenceDiagram
         Scheduler->>Queues: Dequeue Next Packet (via WFQ/ML Algorithm)
         Scheduler->>Scheduler: Simulate Wire Delay (bits / Bandwidth)
         Scheduler->>DPI: Forward Packet to Egress Socket & WebSocket
-        DPI->>DPI: Log [FWD] with Wire Latency & OSI Layer Breakdown
+        DPI->>DPI: Log FWD with Wire Latency & OSI Layer Breakdown
     end
 ```
 
@@ -378,32 +375,28 @@ The quantitative performance comparison across all four scheduling disciplines u
 For **Flow 999 (AirDrop File Transfer)**, NetQoS physically models the **TCP Reno** Congestion Control state machine:
 
 ```mermaid
-stateDiagram-v2
-    [*] --> Slow_Start: File Dragged & Dropped (cwnd = 4 MSS)
+flowchart TD
+    S0["Start: File Transfer Initiated<br/>(Initial cwnd = 4 MSS)"] --> S1
     
-    state Slow_Start {
-        [*] --> Exponential_Growth
-        Exponential_Growth --> Exponential_Growth: ACK Received (cwnd = cwnd + 1)
-    }
+    subgraph Phase1["Phase 1: Slow Start"]
+        S1["Slow Start Engine<br/>Exponential cwnd growth (+1 per ACK)"]
+    end
     
-    Slow_Start --> Congestion_Avoidance: cwnd >= ssthresh (16 MSS)
+    S1 -->|cwnd reaches ssthresh| S2
     
-    state Congestion_Avoidance {
-        [*] --> Additive_Increase
-        Additive_Increase --> Additive_Increase: ACK Received (cwnd = cwnd + 1/cwnd)
-    }
+    subgraph Phase2["Phase 2: Congestion Avoidance"]
+        S2["Congestion Avoidance (AIMD)<br/>Linear growth (+1/cwnd per ACK)"]
+    end
     
-    Slow_Start --> Fast_Recovery: Packet Loss / Token Bucket Drop
-    Congestion_Avoidance --> Fast_Recovery: Packet Loss / Token Bucket Drop
+    S1 -->|Packet Loss or Drop Detected| S3
+    S2 -->|Packet Loss or Drop Detected| S3
     
-    state Fast_Recovery {
-        [*] --> Halve_Threshold: ssthresh = max(2, cwnd / 2)
-        Halve_Threshold --> Reset_Window: cwnd = 2 MSS
-        Reset_Window --> Retransmit_Segment: Retransmit Missing Segment
-    }
+    subgraph Phase3["Phase 3: Fast Recovery and Retransmission"]
+        S3["Fast Recovery<br/>1. ssthresh = max(2, cwnd / 2)<br/>2. cwnd = 2 MSS<br/>3. Retransmit Missing Datagram"]
+    end
     
-    Fast_Recovery --> Congestion_Avoidance: Retransmitted Packet ACKed
-    Congestion_Avoidance --> [*]: Transfer Complete (100% ACKed)
+    S3 -->|Retransmission ACKed| S2
+    S2 -->|100% Datagrams ACKed| S4["Transfer Complete"]
 ```
 
 ---
