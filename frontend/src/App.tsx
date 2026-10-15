@@ -406,6 +406,13 @@ function App() {
             if (prev) URL.revokeObjectURL(prev);
             return url;
           });
+        } else if (event.data instanceof ArrayBuffer) {
+          const blob = new Blob([event.data], { type: 'image/jpeg' });
+          const url = URL.createObjectURL(blob);
+          setRoutedVideoBlobUrl(prev => {
+            if (prev) URL.revokeObjectURL(prev);
+            return url;
+          });
         }
       };
     };
@@ -422,6 +429,7 @@ function App() {
 
   const startBrowserWebcam = async () => {
     try {
+      setCameraActive(true); // Always force unpause so user sees the live stream immediately!
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { width: 640, height: 360 }
       });
@@ -479,6 +487,10 @@ function App() {
       clearInterval((window as any).__camInterval);
     }
     setIsBrowserCamActive(false);
+    setRoutedVideoBlobUrl(prev => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
   };
 
   const sendChatMessage = (customText?: string) => {
@@ -749,14 +761,15 @@ function App() {
                     </button>
                     <button 
                       onClick={() => setCameraActive(!cameraActive)}
+                      title={cameraActive ? "Click to pause video display" : "Click to unpause and resume video display"}
                       className={`text-xs font-bold px-3 py-1.5 rounded-lg border transition flex items-center gap-1.5 shadow-sm ${
                         cameraActive 
-                          ? 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700' 
-                          : 'bg-rose-900/40 text-rose-300 border-rose-800 hover:bg-rose-900/60'
+                          ? 'bg-slate-800 text-emerald-300 border-slate-700 hover:bg-slate-700' 
+                          : 'bg-rose-950/80 text-rose-300 border-rose-700 hover:bg-rose-900/80 animate-pulse'
                       }`}
                     >
                       <Video size={14} className={cameraActive ? "text-emerald-400" : "text-rose-400"} />
-                      {cameraActive ? "Feed On" : "Paused"}
+                      {cameraActive ? "Feed Active" : "⏸️ Paused (Click to Resume)"}
                     </button>
                     <button 
                       onClick={captureSnapshot}
@@ -767,31 +780,61 @@ function App() {
                   </div>
                 </div>
 
-                {/* Hidden video element used to capture frames from browser webcam */}
-                <video id="webcam-hidden-player" autoPlay playsInline muted style={{ display: 'none' }} />
+                {/* Hidden video element placed offscreen so browser keeps actively decoding video frames at 30 FPS */}
+                <video 
+                  id="webcam-hidden-player" 
+                  autoPlay 
+                  playsInline 
+                  muted 
+                  className="fixed opacity-0 pointer-events-none -left-[9999px] -top-[9999px] w-4 h-4" 
+                />
 
                 {/* Video Container with Dynamic Network Health HUD */}
                 <div className="relative w-full bg-black rounded-xl overflow-hidden aspect-video border border-slate-800 flex items-center justify-center group shadow-inner">
-                  {cameraActive && (
+                  {!cameraActive ? (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-400 z-20 p-6 text-center bg-slate-950/90 backdrop-blur-sm">
+                      <Video size={48} className="mb-3 text-rose-400 opacity-70" />
+                      <p className="text-base font-bold text-rose-300">Video Feed is Currently Paused</p>
+                      <p className="text-xs text-slate-400 mt-1 max-w-sm">
+                        Ingress packets are continuing in background. Click <strong className="text-rose-400 cursor-pointer underline" onClick={() => setCameraActive(true)}>"⏸️ Paused (Click to Resume)"</strong> at top right to view live frames.
+                      </p>
+                    </div>
+                  ) : routedVideoBlobUrl ? (
                     <img 
                       id="live-video"
-                      src={routedVideoBlobUrl || "http://127.0.0.1:9007/video"} 
+                      src={routedVideoBlobUrl} 
                       crossOrigin="anonymous"
-                      alt="Live Video Stream" 
+                      alt="Routed SD-WAN Video Stream" 
                       className="w-full h-full object-contain z-10" 
-                      onError={(e) => { if (!routedVideoBlobUrl) e.currentTarget.style.display = 'none'; }} 
-                      onLoad={(e) => { e.currentTarget.style.display = 'block'; }} 
                     />
+                  ) : isBrowserCamActive ? (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-400 z-10 p-6 text-center">
+                      <div className="w-10 h-10 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin mb-3"></div>
+                      <p className="text-sm font-semibold text-indigo-300">Ingressing In-Browser WebCam via Flow 998...</p>
+                      <p className="text-xs text-slate-500 mt-1 max-w-sm">
+                        Packaging JPEG datagrams and scheduling through Router QoS queue.
+                      </p>
+                    </div>
+                  ) : (
+                    <>
+                      <img 
+                        id="live-video"
+                        src="http://127.0.0.1:9007/video" 
+                        crossOrigin="anonymous"
+                        alt="Live Video Stream" 
+                        className="w-full h-full object-contain z-10" 
+                        onError={(e) => { e.currentTarget.style.display = 'none'; }} 
+                        onLoad={(e) => { e.currentTarget.style.display = 'block'; }} 
+                      />
+                      <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-500 z-0 p-6 text-center">
+                        <Video size={48} className="mb-3 opacity-30 text-indigo-400" />
+                        <p className="text-sm font-semibold text-slate-400">WebCam Feed Offline / Waiting for Ingress</p>
+                        <p className="text-xs text-slate-500 mt-1 max-w-sm">
+                          Click <strong className="text-indigo-400">"🎥 Start In-Browser Cam"</strong> above to stream directly from this browser, or run <code className="bg-slate-800 text-indigo-400 px-1 py-0.5 rounded">python video_client.py</code>.
+                        </p>
+                      </div>
+                    </>
                   )}
-
-                  {/* Fallback Display if video isn't loaded */}
-                  <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-500 z-0 p-6 text-center">
-                    <Video size={48} className="mb-3 opacity-30 text-indigo-400" />
-                    <p className="text-sm font-semibold text-slate-400">WebCam Feed Offline / Waiting for Ingress</p>
-                    <p className="text-xs text-slate-500 mt-1 max-w-sm">
-                      Click <strong className="text-indigo-400">"🎥 Start In-Browser Cam"</strong> above to stream directly from this browser, or run <code className="bg-slate-800 text-indigo-400 px-1 py-0.5 rounded">python video_client.py</code>.
-                    </p>
-                  </div>
 
                   {/* Live Quality Diagnostic Overlay (Like Zoom / Google Meet) */}
                   <div className="absolute top-3 left-3 z-20 flex items-center gap-2">
