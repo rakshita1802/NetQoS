@@ -398,13 +398,28 @@ function App() {
 
       try {
         chatSocket = new WebSocket(`${WS_BASE}/chat`);
+        chatSocket.onopen = () => {
+          setChatWs(chatSocket);
+        };
         chatSocket.onmessage = (event) => {
           const arrivalTime = new Date().toLocaleTimeString();
           const estimatedLatency = metrics.latency_s > 0 ? (metrics.latency_s * 1000).toFixed(1) : (Math.random() * 2 + 1).toFixed(1);
-          setChatMessages(prev => [
-            ...prev, 
-            { id: Date.now(), text: event.data, time: arrivalTime, delayMs: parseFloat(estimatedLatency) }
-          ].slice(-15));
+          setChatMessages(prev => {
+            const hasRecentMatch = prev.slice(-4).some(m => m.text === event.data);
+            if (hasRecentMatch) return prev;
+            return [
+              ...prev, 
+              { id: Date.now(), text: event.data, time: arrivalTime, delayMs: parseFloat(estimatedLatency) }
+            ].slice(-25);
+          });
+        };
+        chatSocket.onclose = () => {
+          if (isMounted) {
+            setChatWs(null);
+            setTimeout(() => {
+              if (isMounted) connectWebSockets();
+            }, 2500);
+          }
         };
         setChatWs(chatSocket);
       } catch (e) {}
@@ -512,11 +527,42 @@ function App() {
     });
   };
 
-  const sendChatMessage = (customText?: string) => {
+  const sendChatMessage = async (customText?: string) => {
     const textToSend = customText || chatInput;
-    if (chatWs && textToSend.trim() !== '') {
-      chatWs.send(textToSend.trim());
-      if (!customText) setChatInput('');
+    if (!textToSend || textToSend.trim() === '') return;
+    const cleanText = textToSend.trim();
+    if (!customText) setChatInput('');
+
+    // Instant optimistic update so the user immediately sees the message in the chat feed
+    const arrivalTime = new Date().toLocaleTimeString();
+    const estLatency = metrics.latency_s > 0 ? Number((metrics.latency_s * 1000).toFixed(1)) : 1.2;
+    setChatMessages(prev => [
+      ...prev,
+      { id: Date.now(), text: cleanText, time: arrivalTime, delayMs: estLatency }
+    ].slice(-25));
+
+    // Send via WebSocket if open
+    let sentWs = false;
+    if (chatWs && chatWs.readyState === WebSocket.OPEN) {
+      try {
+        chatWs.send(cleanText);
+        sentWs = true;
+      } catch (e) {
+        console.error("Chat WS error", e);
+      }
+    }
+
+    // Fallback to REST API so it ALWAYS gets enqueued into router Flow 997 even if WS is offline
+    if (!sentWs) {
+      try {
+        await fetch(`${API_BASE}/chat/send`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: cleanText })
+        });
+      } catch (e) {
+        console.error("Chat HTTP Fallback error", e);
+      }
     }
   };
 
@@ -939,8 +985,13 @@ function App() {
                       <p className="text-[10px] text-slate-400 font-mono">Flow 997 • Interactive Messaging</p>
                     </div>
                   </div>
-                  <span className="text-[10px] bg-slate-800 text-slate-400 px-2 py-0.5 rounded font-mono">
-                    UDP Datagram
+                  <span className={`text-[10px] px-2 py-0.5 rounded font-mono flex items-center gap-1.5 ${
+                    chatWs && chatWs.readyState === WebSocket.OPEN
+                      ? 'bg-emerald-950/80 text-emerald-400 border border-emerald-800'
+                      : 'bg-indigo-950/80 text-indigo-300 border border-indigo-800'
+                  }`}>
+                    <span className={`w-1.5 h-1.5 rounded-full ${chatWs && chatWs.readyState === WebSocket.OPEN ? 'bg-emerald-400 animate-pulse' : 'bg-indigo-400'}`}></span>
+                    <span>{chatWs && chatWs.readyState === WebSocket.OPEN ? 'UDP Live Wire' : 'QoS Engine'}</span>
                   </span>
                 </div>
 

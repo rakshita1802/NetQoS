@@ -275,10 +275,21 @@ async def websocket_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         print("WebSocket client disconnected")
 
+class ChatMessageRequest(BaseModel):
+    message: str
+
+@app.post("/api/chat/send")
+async def send_chat_message_endpoint(req: ChatMessageRequest):
+    payload = req.message.encode('utf-8')
+    pkt = PacketData(timestamp=time.time(), flow_id=997, seq_num=0, payload=payload)
+    classifier.classify_and_enqueue(pkt, "UDP")
+    return {"status": "enqueued", "flow_id": 997, "bytes": len(payload)}
+
 @app.websocket("/ws/chat")
 async def chat_endpoint(websocket: WebSocket):
     await websocket.accept()
-    chat_connections.append(websocket)
+    if websocket not in chat_connections:
+        chat_connections.append(websocket)
     try:
         while True:
             text = await websocket.receive_text()
@@ -288,8 +299,11 @@ async def chat_endpoint(websocket: WebSocket):
             pkt = PacketData(timestamp=time.time(), flow_id=997, seq_num=0, payload=payload)
             # Route it via UDP
             classifier.classify_and_enqueue(pkt, "UDP")
-    except WebSocketDisconnect:
-        chat_connections.remove(websocket)
+    except Exception:
+        pass
+    finally:
+        if websocket in chat_connections:
+            chat_connections.remove(websocket)
 
 @app.websocket("/ws/video_ingress")
 async def video_ingress_endpoint(websocket: WebSocket):
