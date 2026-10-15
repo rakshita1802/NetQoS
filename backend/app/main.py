@@ -317,7 +317,9 @@ async def video_egress_endpoint(websocket: WebSocket):
     try:
         while True:
             await websocket.receive_text()
-    except WebSocketDisconnect:
+    except Exception:
+        pass
+    finally:
         if websocket in video_egress_connections:
             video_egress_connections.remove(websocket)
 

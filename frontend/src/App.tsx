@@ -355,75 +355,90 @@ function App() {
   });
 
   useEffect(() => {
-    let ws: WebSocket;
-    let chatSocket: WebSocket;
-    let videoEgressSocket: WebSocket;
-    let reconnectTimeout: any;
+    let ws: WebSocket | null = null;
+    let chatSocket: WebSocket | null = null;
+    let videoEgressSocket: WebSocket | null = null;
+    let reconnectTimer: any = null;
+    let isMounted = true;
 
     const connectWebSockets = () => {
-      ws = new WebSocket(`${WS_BASE}/metrics`);
-      
-      ws.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          setMetrics(data.metrics);
-          setSchedulerInfo({ scheduler: data.scheduler, stats: data.scheduler_stats });
-          setActiveFlows(data.active_flows || []);
-          setFirewallEnabled(data.firewall_enabled || false);
-          
-          setHistory(prev => {
-            if (isHistoricalView) return prev;
-            const newHist = [...prev, {
-              time: new Date().toLocaleTimeString(),
-              throughput: (data.metrics.throughput_bps / 1000000).toFixed(2),
-              latency: (data.metrics.latency_s * 1000).toFixed(1)
-            }];
-            if (newHist.length > 25) return newHist.slice(newHist.length - 25);
-            return newHist;
-          });
-        } catch (e) {
-          console.error("Failed to parse metrics", e);
-        }
-      };
+      if (!isMounted) return;
 
-      chatSocket = new WebSocket(`${WS_BASE}/chat`);
-      chatSocket.onmessage = (event) => {
-        const arrivalTime = new Date().toLocaleTimeString();
-        const estimatedLatency = metrics.latency_s > 0 ? (metrics.latency_s * 1000).toFixed(1) : (Math.random() * 2 + 1).toFixed(1);
-        setChatMessages(prev => [
-          ...prev, 
-          { id: Date.now(), text: event.data, time: arrivalTime, delayMs: parseFloat(estimatedLatency) }
-        ].slice(-15));
-      };
-      setChatWs(chatSocket);
+      try {
+        ws = new WebSocket(`${WS_BASE}/metrics`);
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            setMetrics(data.metrics);
+            setSchedulerInfo({ scheduler: data.scheduler, stats: data.scheduler_stats });
+            setActiveFlows(data.active_flows || []);
+            setFirewallEnabled(data.firewall_enabled || false);
+            
+            setHistory(prev => {
+              if (isHistoricalView) return prev;
+              const newHist = [...prev, {
+                time: new Date().toLocaleTimeString(),
+                throughput: (data.metrics.throughput_bps / 1000000).toFixed(2),
+                latency: (data.metrics.latency_s * 1000).toFixed(1)
+              }];
+              if (newHist.length > 25) return newHist.slice(newHist.length - 25);
+              return newHist;
+            });
+          } catch (e) {
+            console.error("Failed to parse metrics", e);
+          }
+        };
+        ws.onclose = () => {
+          if (isMounted) {
+            clearTimeout(reconnectTimer);
+            reconnectTimer = setTimeout(connectWebSockets, 2000);
+          }
+        };
+      } catch (e) {}
 
-      videoEgressSocket = new WebSocket(`${WS_BASE}/video_egress`);
-      videoEgressSocket.binaryType = 'blob';
-      videoEgressSocket.onmessage = (event) => {
-        if (event.data instanceof Blob) {
-          const url = URL.createObjectURL(event.data);
-          setRoutedVideoBlobUrl(prev => {
-            if (prev) URL.revokeObjectURL(prev);
-            return url;
-          });
-        } else if (event.data instanceof ArrayBuffer) {
-          const blob = new Blob([event.data], { type: 'image/jpeg' });
-          const url = URL.createObjectURL(blob);
-          setRoutedVideoBlobUrl(prev => {
-            if (prev) URL.revokeObjectURL(prev);
-            return url;
-          });
-        }
-      };
+      try {
+        chatSocket = new WebSocket(`${WS_BASE}/chat`);
+        chatSocket.onmessage = (event) => {
+          const arrivalTime = new Date().toLocaleTimeString();
+          const estimatedLatency = metrics.latency_s > 0 ? (metrics.latency_s * 1000).toFixed(1) : (Math.random() * 2 + 1).toFixed(1);
+          setChatMessages(prev => [
+            ...prev, 
+            { id: Date.now(), text: event.data, time: arrivalTime, delayMs: parseFloat(estimatedLatency) }
+          ].slice(-15));
+        };
+        setChatWs(chatSocket);
+      } catch (e) {}
+
+      try {
+        videoEgressSocket = new WebSocket(`${WS_BASE}/video_egress`);
+        videoEgressSocket.binaryType = 'blob';
+        videoEgressSocket.onmessage = (event) => {
+          if (event.data instanceof Blob) {
+            const url = URL.createObjectURL(event.data);
+            setRoutedVideoBlobUrl(prev => {
+              if (prev) URL.revokeObjectURL(prev);
+              return url;
+            });
+          } else if (event.data instanceof ArrayBuffer) {
+            const blob = new Blob([event.data], { type: 'image/jpeg' });
+            const url = URL.createObjectURL(blob);
+            setRoutedVideoBlobUrl(prev => {
+              if (prev) URL.revokeObjectURL(prev);
+              return url;
+            });
+          }
+        };
+      } catch (e) {}
     };
 
     connectWebSockets();
 
     return () => {
+      isMounted = false;
       if (ws) ws.close();
       if (chatSocket) chatSocket.close();
       if (videoEgressSocket) videoEgressSocket.close();
-      clearTimeout(reconnectTimeout);
+      if (reconnectTimer) clearTimeout(reconnectTimer);
     };
   }, [isHistoricalView]);
 
@@ -452,11 +467,15 @@ function App() {
       const ctx = canvas.getContext('2d');
 
       const intervalId = setInterval(() => {
-        if (!hiddenVideo || hiddenVideo.readyState < 2) return;
+        // Can capture from the visible pip player, direct video, or hidden player
+        const sourceVideo = (document.getElementById('webcam-pip-player') as HTMLVideoElement) ||
+                            (document.getElementById('live-video-direct') as HTMLVideoElement) ||
+                            hiddenVideo;
+        if (!sourceVideo || sourceVideo.readyState < 2) return;
         if (ingressWs.readyState !== WebSocket.OPEN) return;
 
         if (ctx) {
-          ctx.drawImage(hiddenVideo, 0, 0, 640, 360);
+          ctx.drawImage(sourceVideo, 0, 0, 640, 360);
           canvas.toBlob((blob) => {
             if (blob && ingressWs.readyState === WebSocket.OPEN) {
               blob.arrayBuffer().then((buffer) => {
@@ -800,20 +819,33 @@ function App() {
                       </p>
                     </div>
                   ) : routedVideoBlobUrl ? (
-                    <img 
-                      id="live-video"
-                      src={routedVideoBlobUrl} 
-                      crossOrigin="anonymous"
-                      alt="Routed SD-WAN Video Stream" 
-                      className="w-full h-full object-contain z-10" 
-                    />
+                    <div className="relative w-full h-full flex items-center justify-center">
+                      <img 
+                        id="live-video"
+                        src={routedVideoBlobUrl} 
+                        crossOrigin="anonymous"
+                        alt="Routed SD-WAN Video Stream" 
+                        className="w-full h-full object-contain z-10" 
+                      />
+                      <div className="absolute top-3 right-3 z-20 bg-emerald-950/80 border border-emerald-600/80 backdrop-blur-md px-2.5 py-1 rounded-lg flex items-center gap-2 text-[10px] font-mono text-emerald-300 shadow-lg">
+                        <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                        <span>SD-WAN ROUTED EGRESS (FLOW 998)</span>
+                      </div>
+                    </div>
                   ) : isBrowserCamActive ? (
-                    <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-400 z-10 p-6 text-center">
-                      <div className="w-10 h-10 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin mb-3"></div>
-                      <p className="text-sm font-semibold text-indigo-300">Ingressing In-Browser WebCam via Flow 998...</p>
-                      <p className="text-xs text-slate-500 mt-1 max-w-sm">
-                        Packaging JPEG datagrams and scheduling through Router QoS queue.
-                      </p>
+                    <div className="relative w-full h-full flex items-center justify-center">
+                      <video 
+                        id="live-video-direct"
+                        autoPlay 
+                        playsInline 
+                        muted 
+                        ref={(ref) => { if (ref && browserCamStream) ref.srcObject = browserCamStream; }}
+                        className="w-full h-full object-contain z-10"
+                      />
+                      <div className="absolute top-3 right-3 z-20 bg-indigo-950/90 border border-indigo-700 backdrop-blur-md px-2.5 py-1 rounded-lg flex items-center gap-2 text-[10px] font-mono text-indigo-300 shadow-lg">
+                        <span className="w-2 h-2 rounded-full bg-indigo-400 animate-ping"></span>
+                        <span>DIRECT INGRESS (Syncing with Router QoS...)</span>
+                      </div>
                     </div>
                   ) : (
                     <>
