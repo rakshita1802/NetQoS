@@ -214,8 +214,11 @@ function App() {
   const handleManualDropInjection = () => {
     setFileTransfer(prev => {
       const blocks = [...prev.blocks];
-      const targetIdx = Math.min(prev.sendBase + 1, blocks.length - 1);
-      if (blocks[targetIdx] && blocks[targetIdx].status !== 'ACKED') {
+      let targetIdx = prev.sendBase;
+      while (targetIdx < blocks.length && blocks[targetIdx].status === 'ACKED') {
+        targetIdx++;
+      }
+      if (targetIdx < blocks.length) {
         blocks[targetIdx] = {
           ...blocks[targetIdx],
           status: 'DROPPED',
@@ -249,20 +252,37 @@ function App() {
   useEffect(() => {
     if (!fileTransfer.isTransferring || fileTransfer.isPaused) return;
 
-    if (fileTransfer.sendBase >= fileTransfer.blocks.length) {
-      setFileTransfer(prev => ({ ...prev, isTransferring: false, speedKbps: 0 }));
-      return;
-    }
-
-    const timer = setTimeout(() => {
+    const interval = setInterval(() => {
       setFileTransfer(prev => {
+        if (!prev.isTransferring || prev.isPaused) return prev;
+        if (prev.sendBase >= prev.blocks.length) {
+          return { ...prev, isTransferring: false, speedKbps: 0 };
+        }
+
         const blocks = [...prev.blocks];
         const effectiveWindow = Math.min(Math.floor(prev.cwnd), prev.rwnd);
         let nextSeq = prev.nextSeq;
 
-        // Dispatch datagrams in current sliding window
+        // 1. FAST RETRANSMIT: Immediately retransmit any DROPPED blocks in the active window
+        for (let i = prev.sendBase; i < Math.min(blocks.length, prev.sendBase + effectiveWindow); i++) {
+          if (blocks[i].status === 'DROPPED') {
+            blocks[i] = {
+              ...blocks[i],
+              status: 'IN_FLIGHT'
+            };
+            if (fileWsRef.current && fileWsRef.current.readyState === WebSocket.OPEN) {
+              fileWsRef.current.send(JSON.stringify({
+                action: "SEND",
+                seq: i,
+                size: blocks[i].size
+              }));
+            }
+          }
+        }
+
+        // 2. Dispatch pending datagrams in current sliding window
         while (nextSeq < prev.sendBase + effectiveWindow && nextSeq < blocks.length) {
-          if (blocks[nextSeq].status === 'PENDING' || blocks[nextSeq].status === 'DROPPED') {
+          if (blocks[nextSeq].status === 'PENDING') {
             blocks[nextSeq] = {
               ...blocks[nextSeq],
               status: 'IN_FLIGHT'
@@ -283,9 +303,9 @@ function App() {
         let newCwnd = prev.cwnd;
         let newSsthresh = prev.ssthresh;
         let newTcpState = prev.tcpState;
-        let newSendBase = prev.sendBase;
 
-        for (let i = prev.sendBase; i < nextSeq; i++) {
+        // 3. Process ACKs and simulated loss for IN_FLIGHT blocks
+        for (let i = prev.sendBase; i < Math.min(blocks.length, prev.sendBase + effectiveWindow); i++) {
           if (blocks[i].status === 'IN_FLIGHT') {
             const isCongested = firewallEnabled || isSimulatingDDoS || (metrics.packet_loss_rate > 0.05);
             const dropChance = isCongested ? 0.35 : 0.02;
@@ -301,7 +321,6 @@ function App() {
               newSsthresh = Math.max(2, Math.floor(newCwnd / 2));
               newCwnd = 2;
               newTcpState = 'FAST_RECOVERY';
-              nextSeq = Math.min(nextSeq, i);
               break;
             } else {
               blocks[i] = {
@@ -328,6 +347,8 @@ function App() {
           }
         }
 
+        // 4. Slide sendBase forward past all consecutively ACKED blocks
+        let newSendBase = prev.sendBase;
         while (newSendBase < blocks.length && blocks[newSendBase].status === 'ACKED') {
           newSendBase++;
         }
@@ -347,10 +368,10 @@ function App() {
           speedKbps: Math.max(110, speed)
         };
       });
-    }, fileTransfer.rttDelay);
+    }, Math.max(60, fileTransfer.rttDelay));
 
-    return () => clearTimeout(timer);
-  }, [fileTransfer.isTransferring, fileTransfer.isPaused, fileTransfer.sendBase, fileTransfer.nextSeq, fileTransfer.rttDelay, firewallEnabled, isSimulatingDDoS, metrics.packet_loss_rate]);
+    return () => clearInterval(interval);
+  }, [fileTransfer.isTransferring, fileTransfer.isPaused, fileTransfer.rttDelay, firewallEnabled, isSimulatingDDoS, metrics.packet_loss_rate]);
 
 
   const [flowConfig, setFlowConfig] = useState({
