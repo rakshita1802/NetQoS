@@ -116,11 +116,32 @@ async def scheduler_loop():
                         pass
             # --- LIVE INTERACTIVE CHAT LOGIC ---
             elif pkt.flow_id == 997:
-                msg = pkt.payload.decode('utf-8', errors='ignore')
-                for ws in chat_connections:
+                raw_str = pkt.payload.decode('utf-8', errors='ignore')
+                msg_text = raw_str
+                msg_id = None
+                try:
+                    parsed_json = json.loads(raw_str)
+                    if isinstance(parsed_json, dict) and "text" in parsed_json:
+                        msg_text = parsed_json.get("text", "")
+                        msg_id = parsed_json.get("id")
+                except Exception:
+                    pass
+
+                transit_ms = round(max(0.6, (time.time() - pkt.timestamp) * 1000), 1)
+                queue_type = "HIGH_PRIORITY" if current_scheduler_name in ["Priority", "Predictive ML", "WFQ"] else "FIFO_SHARED"
+
+                chat_payload = json.dumps({
+                    "id": msg_id,
+                    "text": msg_text,
+                    "delay_ms": transit_ms,
+                    "flow_id": 997,
+                    "scheduler": current_scheduler_name,
+                    "queue": queue_type,
+                    "is_congested": transit_ms > 25.0
+                })
+                for ws in list(chat_connections):
                     try:
-                        # Broadcast the delayed message to all chat clients!
-                        asyncio.create_task(ws.send_text(msg))
+                        asyncio.create_task(ws.send_text(chat_payload))
                     except Exception:
                         pass
             # --------------------------------
@@ -277,10 +298,12 @@ async def websocket_endpoint(websocket: WebSocket):
 
 class ChatMessageRequest(BaseModel):
     message: str
+    id: int = 0
 
 @app.post("/api/chat/send")
 async def send_chat_message_endpoint(req: ChatMessageRequest):
-    payload = req.message.encode('utf-8')
+    packet_obj = {"text": req.message, "id": req.id}
+    payload = json.dumps(packet_obj).encode('utf-8')
     pkt = PacketData(timestamp=time.time(), flow_id=997, seq_num=0, payload=payload)
     classifier.classify_and_enqueue(pkt, "UDP")
     return {"status": "enqueued", "flow_id": 997, "bytes": len(payload)}

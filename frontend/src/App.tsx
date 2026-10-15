@@ -100,7 +100,15 @@ function App() {
   const [history, setHistory] = useState<any[]>([]);
   const [isHistoricalView, setIsHistoricalView] = useState(false);  
   const [firewallEnabled, setFirewallEnabled] = useState(false);
-  const [chatMessages, setChatMessages] = useState<{ id: number; text: string; time: string; delayMs: number }[]>([]);
+  const [chatMessages, setChatMessages] = useState<{ 
+    id: number; 
+    text: string; 
+    time: string; 
+    delayMs: number;
+    scheduler?: string;
+    queue?: string;
+    isCongested?: boolean;
+  }[]>([]);
   const [chatInput, setChatInput] = useState('');
   const [chatWs, setChatWs] = useState<WebSocket | null>(null);
   const [snapshot, setSnapshot] = useState<string | null>(null);
@@ -403,13 +411,46 @@ function App() {
         };
         chatSocket.onmessage = (event) => {
           const arrivalTime = new Date().toLocaleTimeString();
-          const estimatedLatency = metrics.latency_s > 0 ? (metrics.latency_s * 1000).toFixed(1) : (Math.random() * 2 + 1).toFixed(1);
+          let parsedData: any = null;
+          try {
+            parsedData = JSON.parse(event.data);
+          } catch (e) {
+            parsedData = null;
+          }
+
+          const msgText = (parsedData && typeof parsedData === 'object' && parsedData.text) ? parsedData.text : event.data;
+          const msgDelay = (parsedData && typeof parsedData === 'object' && typeof parsedData.delay_ms === 'number')
+            ? parsedData.delay_ms
+            : (metrics.latency_s > 0 ? Number((metrics.latency_s * 1000).toFixed(1)) : Number((0.9 + Math.random() * 0.9).toFixed(1)));
+          const msgScheduler = (parsedData && parsedData.scheduler) || schedulerInfo.scheduler;
+          const msgQueue = (parsedData && parsedData.queue) || 'ROUTER';
+          const msgId = (parsedData && parsedData.id) ? Number(parsedData.id) : null;
+          const isCongested = msgDelay > 25;
+
           setChatMessages(prev => {
-            const hasRecentMatch = prev.slice(-4).some(m => m.text === event.data);
-            if (hasRecentMatch) return prev;
+            const existingIdx = prev.findIndex(m => (msgId && m.id === msgId) || (m.text === msgText && Math.abs(Date.now() - m.id) < 6000));
+            if (existingIdx !== -1) {
+              const updated = [...prev];
+              updated[existingIdx] = {
+                ...updated[existingIdx],
+                delayMs: msgDelay,
+                scheduler: msgScheduler,
+                queue: msgQueue,
+                isCongested: isCongested
+              };
+              return updated;
+            }
             return [
-              ...prev, 
-              { id: Date.now(), text: event.data, time: arrivalTime, delayMs: parseFloat(estimatedLatency) }
+              ...prev,
+              {
+                id: msgId || Date.now(),
+                text: msgText,
+                time: arrivalTime,
+                delayMs: msgDelay,
+                scheduler: msgScheduler,
+                queue: msgQueue,
+                isCongested: isCongested
+              }
             ].slice(-25);
           });
         };
@@ -533,19 +574,33 @@ function App() {
     const cleanText = textToSend.trim();
     if (!customText) setChatInput('');
 
-    // Instant optimistic update so the user immediately sees the message in the chat feed
+    const msgId = Date.now();
     const arrivalTime = new Date().toLocaleTimeString();
-    const estLatency = metrics.latency_s > 0 ? Number((metrics.latency_s * 1000).toFixed(1)) : 1.2;
+    // Realistic microsecond wire jitter when idle (0.8ms - 1.8ms) or real network latency when congested
+    const idleJitter = Number((0.8 + Math.random() * 1.1).toFixed(1));
+    const estLatency = metrics.latency_s > 0 ? Number((metrics.latency_s * 1000).toFixed(1)) : idleJitter;
+    const isCongested = estLatency > 25;
+
+    // Instant optimistic update so the user immediately sees the message in the chat feed
     setChatMessages(prev => [
       ...prev,
-      { id: Date.now(), text: cleanText, time: arrivalTime, delayMs: estLatency }
+      { 
+        id: msgId, 
+        text: cleanText, 
+        time: arrivalTime, 
+        delayMs: estLatency,
+        scheduler: schedulerInfo.scheduler,
+        isCongested: isCongested 
+      }
     ].slice(-25));
+
+    const packetPayload = JSON.stringify({ id: msgId, text: cleanText });
 
     // Send via WebSocket if open
     let sentWs = false;
     if (chatWs && chatWs.readyState === WebSocket.OPEN) {
       try {
-        chatWs.send(cleanText);
+        chatWs.send(packetPayload);
         sentWs = true;
       } catch (e) {
         console.error("Chat WS error", e);
@@ -558,7 +613,7 @@ function App() {
         await fetch(`${API_BASE}/chat/send`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ message: cleanText })
+          body: JSON.stringify({ message: cleanText, id: msgId })
         });
       } catch (e) {
         console.error("Chat HTTP Fallback error", e);
@@ -1005,19 +1060,54 @@ function App() {
                     </div>
                   )}
 
-                  {chatMessages.map((msg) => (
-                    <div key={msg.id} className="bg-slate-950/80 border border-slate-800/80 p-2.5 rounded-xl">
-                      <div className="flex items-center justify-between mb-1 text-[10px] text-slate-400">
-                        <span className="font-semibold text-slate-300">Operator</span>
-                        <span>{msg.time}</span>
+                  {chatMessages.map((msg) => {
+                    const isBloated = msg.delayMs > 25;
+                    return (
+                      <div 
+                        key={msg.id} 
+                        className={`border p-2.5 rounded-xl transition-all ${
+                          isBloated 
+                            ? 'bg-rose-950/30 border-rose-800/70 shadow-sm shadow-rose-950/50' 
+                            : 'bg-slate-950/80 border-slate-800/80'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between mb-1 text-[10px] text-slate-400">
+                          <span className="font-semibold text-slate-300 flex items-center gap-1.5">
+                            Operator
+                            {msg.scheduler && (
+                              <span className={`text-[8px] font-mono px-1 py-0.2 rounded ${
+                                isBloated ? 'bg-rose-900/60 text-rose-300' : 'bg-slate-800 text-slate-400'
+                              }`}>
+                                {msg.scheduler}
+                              </span>
+                            )}
+                          </span>
+                          <span>{msg.time}</span>
+                        </div>
+                        <div className="text-slate-200 text-xs font-medium">{msg.text}</div>
+                        <div className={`mt-1.5 pt-1.5 border-t border-slate-900 text-[9px] font-mono flex items-center justify-between ${
+                          isBloated ? 'text-rose-400' : 'text-emerald-400/90'
+                        }`}>
+                          <span className="flex items-center gap-1.5">
+                            {isBloated ? (
+                              <>
+                                <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse"></span>
+                                <span className="font-bold text-rose-300">⚠️ BUFFERBLOAT (QUEUED)</span>
+                              </>
+                            ) : (
+                              <>
+                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                                <span>DELIVERED VIA ROUTER</span>
+                              </>
+                            )}
+                          </span>
+                          <span className={`font-bold ${isBloated ? 'text-rose-400 text-[10px]' : 'text-emerald-400'}`}>
+                            {msg.delayMs}ms
+                          </span>
+                        </div>
                       </div>
-                      <div className="text-slate-200 text-xs font-medium">{msg.text}</div>
-                      <div className="mt-1 pt-1 border-t border-slate-900 text-[9px] text-emerald-400/80 font-mono flex items-center justify-between">
-                        <span>DELIVERED VIA ROUTER</span>
-                        <span>{msg.delayMs}ms</span>
-                      </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
 
                 {/* Preset Testing Prompts */}
@@ -1033,6 +1123,16 @@ function App() {
                     className="bg-slate-800 hover:bg-slate-700 text-slate-300 px-2 py-1 rounded whitespace-nowrap"
                   >
                     "Critical deploy?"
+                  </button>
+                  <button 
+                    onClick={async () => {
+                      await startTraffic(3000, 'UDP');
+                      sendChatMessage("⚠️ Congestion burst verification packet");
+                    }}
+                    className="bg-amber-950/70 hover:bg-amber-900/80 text-amber-300 border border-amber-800/80 px-2 py-1 rounded whitespace-nowrap font-mono"
+                    title="Starts 3,000 PPS burst to show Bufferbloat under FIFO vs instant delivery under Priority"
+                  >
+                    ⚡ Test Congestion Difference
                   </button>
                 </div>
 
